@@ -287,11 +287,15 @@ function setStatus(text) {
   $('status').textContent = text;
 }
 
+// The player's own display name, as the server will show it to opponents.
+const myName = () => $('name').value.trim().slice(0, 20) || 'You';
+const meLabel = () => (myName() === 'You' ? 'You' : `${myName()} (you)`);
+
 function newMatch(modeName, opponent) {
   return {
     mode: modeName,
     startedAt: Date.now(),
-    you: { name: $('name').value.trim() || 'You' },
+    you: { name: myName() },
     them: { name: opponent || null },
     rounds: [],
     wins: { you: 0, them: 0 },
@@ -481,7 +485,7 @@ function onRoundResult(msg) {
   if (msg.outcome === 'win') $('youCard').classList.add('won');
   if (msg.outcome === 'lose') $('themCard').classList.add('won');
   setWins(msg.wins.you, msg.wins.them);
-  setStatus({ win: 'You won the round!', lose: 'They won the round.', tie: 'Tie round!' }[msg.outcome]);
+  setStatus({ win: `${myName()} wins the round!`, lose: `${match.them.name} wins the round!`, tie: 'Tie round!' }[msg.outcome]);
 }
 
 function onGameOver(msg) {
@@ -489,8 +493,8 @@ function onGameOver(msg) {
   match.wins = msg.wins;
   snapshotClock();
   const banners = {
-    win: { emoji: '🏆', sound: "You're the Top Dog!" },
-    lose: { emoji: '🐕‍🦺', sound: 'Out-barked.' },
+    win: { emoji: '🏆', sound: `${myName()} is Top Dog!` },
+    lose: { emoji: '🐕‍🦺', sound: `${match.them.name} wins the match!` },
     tie: { emoji: '🤝', sound: 'Dead heat.' },
   };
   setBanner({
@@ -631,6 +635,7 @@ function teardownPeer() {
 // ---------- screens ----------
 
 function showArena(solo) {
+  $('youName').textContent = meLabel();
   document.body.classList.add('home');
   document.body.classList.remove('reporting');
   $('lobby').hidden = true;

@@ -100,6 +100,10 @@ function mlSection(score, color) {
   return { node, render };
 }
 
+// Real names everywhere; the viewer's own name carries a "(you)" tag.
+const meName = (match) => match.you?.name || 'You';
+const meTag = (match) => (meName(match) === 'You' ? 'You' : `${meName(match)} (you)`);
+
 // ---------- per-player panels ----------
 
 function scoreHead(name, color, rep, outcome) {
@@ -254,7 +258,7 @@ function contourChart(score, color) {
     y: { min: lo, max: hi, label: 'semitones re median' },
     series: [
       { name: 'Template', color: css('--muted'), xs, ys: c.template, dash: [5, 4] },
-      { name: 'You', color, xs, ys: c.user },
+      { name: 'Measured', color, xs, ys: c.user },
     ],
     under: (ctx, xMap, yMap) => {
       ctx.strokeStyle = css('--grid-strong');
@@ -340,7 +344,7 @@ function playerPanel(name, color, rep, outcome) {
 function summaryTable(match) {
   const solo = match.mode === 'practice';
   return el('div', { class: 'table-scroll' }, el('table', { class: 'summary' },
-    el('thead', {}, el('tr', {}, ['Round', 'Animal', 'You', solo ? null : match.them.name, solo ? null : 'Margin', solo ? null : 'Winner', 'Your biggest loss'].filter(Boolean).map((h) => el('th', {}, h)))),
+    el('thead', {}, el('tr', {}, ['Round', 'Animal', meTag(match), solo ? null : match.them.name, solo ? null : 'Margin', solo ? null : 'Winner', 'Your biggest loss'].filter(Boolean).map((h) => el('th', {}, h)))),
     el('tbody', {}, match.rounds.map((r) => {
       const worst = r.you.score.terms.reduce((a, b) => (b.lost > a.lost ? b : a));
       const margin = r.them ? r.you.score.score - r.them.score.score : null;
@@ -350,7 +354,7 @@ function summaryTable(match) {
         el('td', { class: 'num' }, r.you.score.score),
         solo ? null : el('td', { class: 'num' }, r.them.score.score),
         solo ? null : el('td', { class: 'num' }, signed(margin, 0)),
-        solo ? null : el('td', {}, el('span', { class: `pill ${r.outcome}` }, { win: 'You', lose: match.them.name, tie: 'Tie' }[r.outcome])),
+        solo ? null : el('td', {}, el('span', { class: `pill ${r.outcome}` }, { win: meName(match), lose: match.them.name, tie: 'Tie' }[r.outcome])),
         el('td', { class: 'muted' }, `${worst.label} (−${worst.lost.toFixed(1)})`),
       );
     })),
@@ -361,7 +365,7 @@ function trajectoryChart(match) {
   if (match.rounds.length < 2) return null;
   const { box, canvas } = chartBox('Score by round');
   const xs = match.rounds.map((r) => r.round);
-  const series = [{ name: 'You', color: css('--you'), xs, ys: match.rounds.map((r) => r.you.score.score) }];
+  const series = [{ name: meTag(match), color: css('--you'), xs, ys: match.rounds.map((r) => r.you.score.score) }];
   if (match.mode !== 'practice') series.push({ name: match.them.name, color: css('--them'), xs, ys: match.rounds.map((r) => r.them.score.score) });
   const markers = series.map((s) => ({ ...s, points: 4, noTip: true }));
   const render = () => linePlot(canvas, {
@@ -377,7 +381,7 @@ function trajectoryChart(match) {
 function diagnosticsTable(match) {
   const rows = [];
   for (const r of match.rounds) {
-    for (const [who, rep] of [['You', r.you], [match.them?.name, r.them]]) {
+    for (const [who, rep] of [[meTag(match), r.you], [match.them?.name, r.them]]) {
       if (!rep || !who) continue;
       const q = rep.analysis?.quality || {};
       const m = rep.meta || {};
@@ -513,7 +517,7 @@ export function renderReport(root, match, { onBack }) {
 
   const headline = solo
     ? `${match.rounds.length} practice round${match.rounds.length === 1 ? '' : 's'}`
-    : `You ${match.wins.you}–${match.wins.them} ${match.them.name}`;
+    : `${meName(match)} ${match.wins.you}–${match.wins.them} ${match.them.name}`;
 
   root.append(
     el('span', { class: 'mini-logo rep-logo' }, 'Barkoff'),
@@ -543,7 +547,7 @@ export function renderReport(root, match, { onBack }) {
     [...tabs.children].forEach((b, j) => b.setAttribute('aria-selected', String(j === i)));
     const r = match.rounds[i];
     const a = ANIMALS[r.animal];
-    const you = playerPanel('You', css('--you'), r.you, r.outcome === 'win' ? 'win' : null);
+    const you = playerPanel(meTag(match), css('--you'), r.you, r.outcome === 'win' ? 'win' : null);
     const them = r.them ? playerPanel(match.them.name, css('--them'), r.them, r.outcome === 'lose' ? 'win' : null) : null;
     detail.replaceChildren(
       el('p', { class: 'round-brief' }, `Round ${r.round}: ${a.emoji} ${a.name} (“${a.sound}”) · ${a.tip}`),
