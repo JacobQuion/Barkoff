@@ -206,8 +206,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* Layout: one full-bleed scene. Sky band on top, centred title, wooden sign
    and lineup in a column, rolling hills + barn + fence anchored to the bottom. */
 :root {
-  --sky-top: #6cc4f5;
-  --sky-low: #d6f0ff;
+  --sky-top: #a6dcfb;
+  --sky-low: #e3f5ff;
   --grass: #7bc54f;
   --grass-dark: #4f9a35;
   --barn: #c8372d;
@@ -383,11 +383,11 @@ body.home main { max-width: none; padding: 0; }
 .p1 { bottom: 22px; left: 6%; font-size: 40px; }
 .p2 { bottom: 30px; left: 46%; font-size: 34px; }
 .p3 { bottom: 18px; right: 5%; font-size: 44px; }
-.walker { font-size: 46px; bottom: 54px; animation: wander linear infinite alternate; }
+.walker { font-size: 64px; bottom: 50px; animation: wander linear infinite alternate; }
 .w1 { left: 8%; animation-duration: 16s; }
-.w2 { left: 30%; animation-duration: 21s; animation-delay: -6s; bottom: 78px; font-size: 40px; }
-.w3 { left: 54%; animation-duration: 26s; animation-delay: -12s; bottom: 66px; font-size: 52px; }
-.w4 { left: 74%; animation-duration: 13s; animation-delay: -3s; bottom: 46px; font-size: 38px; }
+.w2 { left: 30%; animation-duration: 21s; animation-delay: -6s; bottom: 78px; font-size: 56px; }
+.w3 { left: 54%; animation-duration: 26s; animation-delay: -12s; bottom: 66px; font-size: 72px; }
+.w4 { left: 74%; animation-duration: 13s; animation-delay: -3s; bottom: 46px; font-size: 54px; }
 @keyframes wander {
   0% { transform: translateX(0) scaleX(-1); }
   49% { transform: translateX(14vw) scaleX(-1) translateY(-3px); }
@@ -409,7 +409,7 @@ body.home main { max-width: none; padding: 0; }
   .tile { padding: 10px 2px 8px; font-size: 0.8rem; border-radius: 14px; }
   .tile-emoji { font-size: 2.1rem; }
   .barn { width: 90px; bottom: 190px; }
-  .walker { font-size: 38px; }
+  .walker { font-size: 52px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cloud, .walker, .sun { animation: none; }
@@ -448,10 +448,10 @@ body.home main { max-width: none; padding: 0; }
   .hill.back { bottom: 60px; height: 140px; left: 55%; }
   .hill.front { height: 120px; }
   .barn { bottom: 118px; width: 96px; right: max(18px, 4vw); }
-  .walker { font-size: 40px; bottom: 38px; }
-  .w2 { bottom: 56px; font-size: 34px; }
-  .w3 { bottom: 48px; font-size: 44px; }
-  .w4 { bottom: 34px; font-size: 32px; }
+  .walker { font-size: 56px; bottom: 34px; }
+  .w2 { bottom: 50px; font-size: 48px; }
+  .w3 { bottom: 42px; font-size: 62px; }
+  .w4 { bottom: 30px; font-size: 46px; }
   .p1, .p2, .p3 { font-size: 30px; bottom: 16px; }
 }
 @media (min-width: 900px) {
