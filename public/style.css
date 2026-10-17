@@ -415,3 +415,57 @@ body.home main { max-width: none; padding: 0; }
   .cloud, .walker, .sun { animation: none; }
   .tile.speaking .tile-emoji, .bubble { animation-duration: 0.01s; }
 }
+
+/* Wide screens: everything on one screen. Title spans the top, the sign sits
+   left, lineup + how-to stack right, and a shorter meadow fills the bottom. */
+@media (min-width: 900px) {
+  .farm { height: 100svh; min-height: 640px; padding-bottom: 0; }
+  .farm-top {
+    max-width: 1080px;
+    grid-template-columns: minmax(0, 400px) minmax(0, 1fr);
+    grid-template-areas: "title title" "sign lineup" "sign how";
+    align-items: start;
+    column-gap: 40px;
+    row-gap: clamp(10px, 2vh, 18px);
+    padding-top: clamp(10px, 3vh, 28px);
+  }
+  .farm-title { grid-area: title; }
+  .farm-title h1 { font-size: clamp(3rem, 9vh, 4.8rem); }
+  .farm-title p { margin-top: 8px; }
+  .sign { grid-area: sign; width: 100%; }
+  .sign-board { gap: 12px; padding: 18px; }
+  .farm-buttons button { padding: 12px 16px; }
+  .lineup { grid-area: lineup; }
+  .lineup h2 { font-size: 1.6rem; }
+  .lineup > p { margin-bottom: 10px; font-size: 0.92rem; }
+  .lineup-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+  .tile { padding: 10px 2px 8px; font-size: 0.82rem; border-radius: 14px; }
+  .tile-emoji { font-size: 2.2rem; }
+  .how { grid-area: how; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px 16px; gap: 8px 16px; font-size: 0.88rem; }
+  .how span { font-size: 1.3rem; }
+
+  .meadow { height: 200px; }
+  .hill.back { bottom: 60px; height: 140px; left: 55%; }
+  .hill.front { height: 120px; }
+  .barn { bottom: 118px; width: 96px; right: max(18px, 4vw); }
+  .walker { font-size: 40px; bottom: 38px; }
+  .w2 { bottom: 56px; font-size: 34px; }
+  .w3 { bottom: 48px; font-size: 44px; }
+  .w4 { bottom: 34px; font-size: 32px; }
+  .p1, .p2, .p3 { font-size: 30px; bottom: 16px; }
+}
+@media (min-width: 900px) {
+  .farm { display: flex; flex-direction: column; }
+  .farm-top { flex: 1; align-content: center; padding-bottom: clamp(110px, 17vh, 170px); row-gap: clamp(12px, 2.6vh, 26px); }
+  .farm-title h1 { font-size: clamp(3.2rem, 11vh, 6rem); }
+  .farm-title p { font-size: clamp(1rem, 2.2vh, 1.25rem); }
+  .sign-board { gap: clamp(10px, 1.8vh, 16px); padding: clamp(16px, 2.6vh, 24px); }
+  .farm-buttons button { padding: clamp(10px, 1.8vh, 15px) 16px; }
+  .lineup h2 { font-size: clamp(1.5rem, 3.6vh, 2rem); }
+  .tile { padding: clamp(8px, 1.6vh, 14px) 2px clamp(6px, 1.2vh, 11px); }
+  .tile-emoji { font-size: clamp(2rem, 5.6vh, 3rem); }
+}
+@media (min-width: 900px) and (max-width: 1340px) {
+  .barn { width: 64px; bottom: 98px; right: 14px; }
+  .hill.back { left: 70%; }
+}
