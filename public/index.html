@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Barkoff</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐶</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🐶 Barkoff</h1>
+    <p class="tagline">Meet a stranger. Out-bark them.</p>
+  </header>
+
+  <main>
+    <section id="lobby" class="screen">
+      <label class="field">
+        <span>Your name</span>
+        <input id="name" maxlength="20" placeholder="Good Boy" autocomplete="off">
+      </label>
+      <label class="check"><input type="checkbox" id="cam" checked> Turn on my camera</label>
+      <div class="buttons">
+        <button id="findBtn">Find someone to bark at</button>
+        <button id="practiceBtn" class="secondary">Practice solo</button>
+      </div>
+      <p class="hint">
+        Each round you get a random animal. When the countdown ends, both of you make the sound at the same time.
+        Loudest and most convincing wins the round. Best of 3.
+        <br><strong>Headphones help</strong> so your mic doesn't pick up your opponent.
+      </p>
+      <p id="lobbyError" class="error"></p>
+    </section>
+
+    <section id="arena" class="screen hidden">
+      <div id="status" class="status"></div>
+
+      <div id="banner" class="banner idle">
+        <div id="roundLabel" class="round-label"></div>
+        <div id="animalEmoji" class="emoji">🐾</div>
+        <div id="animalSound" class="sound"></div>
+        <div id="animalTip" class="tip"></div>
+        <div id="countdown" class="countdown"></div>
+      </div>
+
+      <div class="players">
+        <div id="youCard" class="player">
+          <div class="video-wrap"><video id="localVideo" autoplay muted playsinline></video></div>
+          <canvas id="localSpec" width="320" height="110"></canvas>
+          <div class="player-head"><span class="pname">You</span><span id="youWins" class="wins"></span></div>
+          <div id="youResult" class="result"></div>
+        </div>
+        <div id="themCard" class="player">
+          <div class="video-wrap"><video id="remoteVideo" autoplay playsinline></video></div>
+          <canvas id="remoteSpec" width="320" height="110"></canvas>
+          <div class="player-head"><span id="themName" class="pname">…</span><span id="themWins" class="wins"></span></div>
+          <div id="themResult" class="result"></div>
+        </div>
+      </div>
+
+      <div class="buttons">
+        <button id="nextBtn">Next opponent</button>
+        <button id="leaveBtn" class="secondary">Leave</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

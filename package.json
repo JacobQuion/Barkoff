@@ -1,0 +1,13 @@
+{
+  "name": "barkoff",
+  "version": "0.1.0",
+  "description": "Meet strangers online and out-bark them.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
