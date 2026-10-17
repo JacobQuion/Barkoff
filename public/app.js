@@ -266,7 +266,7 @@ function renderResult(el, score, outcome, showHint) {
     `<div class="bar"><span>${name}</span><div class="track"><div class="fill" style="width:${pct(x)}%"></div></div></div>`;
   const outcomeText = { win: 'WINS', lose: '', tie: 'TIE' }[outcome] || '';
   el.innerHTML =
-    `<div><span class="big">${Number(score.score)}</span><span class="label"></span>` +
+    `<div><span class="big">${Number(score.score)}</span>` +
     (outcomeText ? `<span class="outcome ${outcome}">${outcomeText}</span>` : '') +
     `</div>` +
     bar('Accuracy', score.breakdown.accuracy) +
@@ -274,7 +274,6 @@ function renderResult(el, score, outcome, showHint) {
     bar('Gusto', score.breakdown.gusto) +
     (SHOW_CLASSIFIER && score.breakdown.recognition != null ? bar('YAMNet', score.breakdown.recognition) : '') +
     (showHint ? `<div class="hint-line"></div>` : '');
-  el.querySelector('.label').textContent = score.label;
   if (showHint) el.querySelector('.hint-line').textContent = `Tip: ${score.hint}`;
 }
 

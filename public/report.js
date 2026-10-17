@@ -110,7 +110,7 @@ function scoreHead(name, color, rep, outcome) {
   const s = rep.score;
   return el('div', { class: 'r-head' },
     el('div', { class: 'r-name' }, el('i', { class: 'swatch', style: `--c:${color}` }), name, outcome === 'win' ? el('span', { class: 'pill win' }, 'Round winner') : null),
-    el('div', { class: 'r-score' }, el('span', { class: 'r-big' }, s.score), el('span', { class: 'r-label' }, s.label)),
+    el('div', { class: 'r-score' }, el('span', { class: 'r-big' }, s.score)),
     el('div', { class: 'r-hint' }, s.hint),
   );
 }
