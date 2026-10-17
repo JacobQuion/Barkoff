@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+models/clap-dl/onnx/audio_model.onnx filter=lfs diff=lfs merge=lfs -text
+models/clap-dl/onnx/model_quantized.onnx filter=lfs diff=lfs merge=lfs -text
+models/clap-dl/onnx/text_model_quantized.onnx filter=lfs diff=lfs merge=lfs -text
