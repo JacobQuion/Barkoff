@@ -594,6 +594,7 @@ function teardownPeer() {
 // ---------- screens ----------
 
 function showArena(solo) {
+  document.body.classList.remove('home');
   $('lobby').hidden = true;
   $('report').hidden = true;
   $('arena').hidden = false;
@@ -635,6 +636,7 @@ function showLobby() {
   $('arena').hidden = true;
   $('report').hidden = true;
   $('lobby').hidden = false;
+  document.body.classList.add('home');
 }
 
 async function withMedia(fn) {
@@ -656,6 +658,31 @@ async function withMedia(fn) {
 try {
   $('name').value = localStorage.getItem('barkoff-name') || '';
 } catch {}
+
+// Home-screen lineup: one tile per animal the judge knows; tapping shows its call.
+for (const id of ANIMAL_IDS) {
+  const a = ANIMALS[id];
+  const tile = document.createElement('button');
+  tile.className = 'tile';
+  tile.type = 'button';
+  tile.setAttribute('aria-label', `${a.name}: ${a.sound}`);
+  const emoji = document.createElement('span');
+  emoji.className = 'tile-emoji';
+  emoji.textContent = a.emoji;
+  tile.append(emoji, a.name);
+  tile.onclick = () => {
+    tile.querySelector('.bubble')?.remove();
+    const bubble = document.createElement('span');
+    bubble.className = 'bubble';
+    bubble.textContent = a.sound;
+    tile.append(bubble);
+    tile.classList.remove('speaking');
+    void tile.offsetWidth; // restart the hop animation
+    tile.classList.add('speaking');
+    bubble.addEventListener('animationend', () => bubble.remove());
+  };
+  $('lineup').append(tile);
+}
 
 $('findBtn').onclick = () => withMedia(findMatch);
 $('practiceBtn').onclick = () => withMedia(() => {
