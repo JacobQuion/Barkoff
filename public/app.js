@@ -172,7 +172,7 @@ function startSpectrogram(canvas, getAnalyser) {
   const maxHz = 5000;
   const minHz = 60;
   let data = null;
-  ctx.fillStyle = '#000';
+  ctx.fillStyle = '#2b1d10';
   ctx.fillRect(0, 0, w, h);
 
   (function draw() {
@@ -180,17 +180,21 @@ function startSpectrogram(canvas, getAnalyser) {
     const a = getAnalyser();
     ctx.drawImage(canvas, -2, 0);
     if (!a) {
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = '#2b1d10';
       ctx.fillRect(w - 2, 0, 2, h);
       return;
     }
     if (!data || data.length !== a.frequencyBinCount) data = new Uint8Array(a.frequencyBinCount);
     a.getByteFrequencyData(data);
     const nyquist = audioCtx.sampleRate / 2;
+    ctx.fillStyle = '#2b1d10';
+    ctx.fillRect(w - 2, 0, 2, h);
     for (let y = 0; y < h; y++) {
       const hz = minHz * Math.pow(maxHz / minHz, 1 - y / h); // log frequency axis
       const v = data[Math.min(data.length - 1, Math.round((hz / nyquist) * data.length))];
-      ctx.fillStyle = `hsl(${30 + v * 0.06}, 100%, ${(v / 255) * 70}%)`;
+      if (!v) continue;
+      // Hay-coloured energy fading in over the barn-wood background.
+      ctx.fillStyle = `hsla(${32 + v * 0.06}, 95%, ${45 + (v / 255) * 30}%, ${Math.min(1, v / 200)})`;
       ctx.fillRect(w - 2, y, 2, 1);
     }
   })();
@@ -305,7 +309,7 @@ async function startPractice() {
   if (mode !== 'practice' || !match) match = newMatch('practice');
   mode = 'practice';
   showArena(true);
-  setStatus('Practice mode. Analysed locally with the same DSP the server uses.');
+  setStatus('Practice round. Just you and the barn.');
   const animal = ANIMAL_IDS[Math.floor(Math.random() * ANIMAL_IDS.length)];
   $('nextBtn').disabled = true;
   const cap = await runRound({
@@ -418,7 +422,7 @@ function onMessage(msg) {
 }
 
 async function onRound(msg) {
-  setStatus(`Round ${msg.round} · clock offset ${clock.offsetMs.toFixed(1)} ms ± ${((clock.rttMs || 0) / 2).toFixed(1)} ms`);
+  setStatus(`Round ${msg.round} · get ready!`);
   const cap = await runRound({
     roundLabel: msg.round > msg.total ? `Sudden death · Round ${msg.round}` : `Round ${msg.round} of ${msg.total}`,
     animal: msg.animal,
@@ -594,7 +598,7 @@ function teardownPeer() {
 // ---------- screens ----------
 
 function showArena(solo) {
-  document.body.classList.remove('home');
+  document.body.classList.add('home');
   $('lobby').hidden = true;
   $('report').hidden = true;
   $('arena').hidden = false;
@@ -612,6 +616,7 @@ function showArena(solo) {
 function showReport() {
   if (!match || !match.rounds.length) return;
   if (disposeReport) disposeReport();
+  document.body.classList.remove('home');
   $('arena').hidden = true;
   $('report').hidden = false;
   window.scrollTo(0, 0);
@@ -621,6 +626,7 @@ function showReport() {
       disposeReport = null;
       $('report').hidden = true;
       $('arena').hidden = false;
+      document.body.classList.add('home');
     },
   });
 }
