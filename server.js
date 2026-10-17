@@ -12,6 +12,7 @@ import { analyze, serializeAnalysis, decodePcm16, SAMPLE_RATE } from './public/d
 import { fromInt16 } from './public/dsp/resample.js';
 import { scoreBark, ANIMAL_IDS } from './public/dsp/score.js';
 import { loadYamnet, classify, recognitionFor, yamnetStatus } from './ml/yamnet.js';
+import { loadClap, clapScores, clapRecognition, clapStatus } from './ml/clap.js';
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -184,17 +185,29 @@ async function judge(animal, pcm, meta) {
   const t0 = performance.now();
   const analysis = analyze(pcm, SAMPLE_RATE);
   const dspMs = performance.now() - t0;
-  let ml = null;
+  // Two classifiers feed one 30% recognition boost: YAMNet (AudioSet event
+  // classes) and CLAP (zero-shot text prompts, incl. "a person imitating …").
+  // The stronger of the two counts.
+  let yamnet = null;
+  let clap = null;
   try {
-    const yam = await classify(pcm);
-    ml = recognitionFor(yam, analysis.tracks.active, animal, HOP_SEC_DSP);
+    yamnet = recognitionFor(await classify(pcm), analysis.tracks.active, animal, HOP_SEC_DSP);
   } catch (err) {
     console.error('yamnet failed', err);
   }
+  try {
+    clap = clapRecognition(await clapScores(pcm, analysis.tracks.active, HOP_SEC_DSP), animal);
+  } catch (err) {
+    console.error('clap failed', err);
+  }
+  const ml = yamnet || clap
+    ? { ...(yamnet || {}), match: Math.max(yamnet?.match ?? 0, clap?.match ?? 0), yamnet, clap }
+    : null;
   const score = scoreBark(animal, analysis, ml);
   meta.serverMs = Math.round(dspMs * 10) / 10;
-  meta.mlMs = ml ? ml.ms : null;
-  meta.mlStatus = yamnetStatus();
+  meta.mlMs = yamnet ? yamnet.ms : null;
+  meta.clapMs = clap ? clap.ms : null;
+  meta.mlStatus = `yamnet ${yamnetStatus()} · clap ${clapStatus()}`;
   meta.scoredBy = 'server';
   return { analysis: serializeAnalysis(analysis), score, meta };
 }
@@ -217,7 +230,7 @@ async function onAudio(player, msg) {
 
   room.reports[i] = report;
   const ml = report.score.ml;
-  console.log(`[room] r${room.round} ${player.name}: ${report.score.score} (${room.animal}) dsp ${report.score.dspScore} ${meta.serverMs} ms · yamnet p=${ml?.p ?? '-'} match=${ml?.match ?? '-'} ${meta.mlMs ?? '-'} ms`);
+  console.log(`[room] r${room.round} ${player.name}: ${report.score.score} (${room.animal}) dsp ${report.score.dspScore} ${meta.serverMs} ms · yamnet ${ml?.yamnet?.match ?? '-'} · clap p=${ml?.clap?.pTarget ?? '-'} match=${ml?.clap?.match ?? '-'} ${meta.clapMs ?? '-'} ms`);
   if (room.reports[0] && room.reports[1]) finishRound(room);
 }
 
@@ -284,3 +297,4 @@ server.listen(PORT, () => {
 });
 
 loadYamnet().then((ok) => console.log(`YAMNet ${ok ? 'loaded' : yamnetStatus()}`));
+loadClap().then((ok) => console.log(`CLAP ${ok ? 'loaded' : clapStatus()}`));
