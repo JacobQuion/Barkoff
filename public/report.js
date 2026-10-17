@@ -37,6 +37,67 @@ function legend(items) {
   return el('div', { class: 'legend' }, items.map(([name, color, dashed]) => el('span', {}, el('i', { class: dashed ? 'swatch dashed' : 'swatch', style: `--c:${color}` }), name)));
 }
 
+
+// ---------- YAMNet ----------
+
+const LOGP_MIN = -5;
+const logPos = (p) => Math.min(1, Math.max(0, (Math.log10(Math.max(p, 10 ** LOGP_MIN)) - LOGP_MIN) / -LOGP_MIN));
+const fmtP = (p) => (p >= 0.01 ? p.toFixed(3) : p > 0 ? p.toExponential(1) : '0');
+
+function mlSection(score, color) {
+  const ml = score.ml;
+  const head = el('h4', {}, 'Neural classifier (YAMNet)');
+  if (!ml) return el('div', {}, head, el('p', { class: 'muted' }, 'The classifier did not run for this round, so it was scored on DSP features alone.'));
+
+  const bars = el('div', { class: 'ml-bars' }, Object.entries(ml.clipProb)
+    .sort((a, b) => b[1] - a[1])
+    .map(([a, p]) => el('div', { class: `ml-row${a === ml.target ? ' target' : ''}` },
+      el('span', {}, `${ANIMALS[a].emoji} ${ANIMALS[a].name}`),
+      el('span', { class: 'wf-track' }, el('span', { class: 'ml-fill', style: `width:${(logPos(p) * 100).toFixed(1)}%;${a === ml.target ? `background:${color}` : ''}` })),
+      el('span', { class: 'num' }, fmtP(p)),
+    )));
+
+  const { box, canvas } = chartBox('Target-class probability per window', `max over ${ml.classes.join(' / ')} · 0.96 s windows, 0.48 s hop · log scale`);
+  const xs = ml.windows.map((w) => w.t + 0.48);
+  const ys = ml.windows.map((w) => Math.log10(Math.max(w.p, 10 ** LOGP_MIN)));
+  const render = () => linePlot(canvas, {
+    height: 130,
+    x: { min: 0, max: Math.max(4, xs[xs.length - 1] + 0.3), format: (v) => `${v.toFixed(1)}s` },
+    y: { min: LOGP_MIN, max: 0, ticks: [-5, -4, -3, -2, -1, 0], format: (v) => (v === 0 ? '1' : `1e${v}`) },
+    series: [
+      { name: 'p (target)', color, xs, ys, width: 1.5 },
+      { name: 'used', color, xs: xs.filter((_, i) => ml.windows[i].used), ys: ys.filter((_, i) => ml.windows[i].used), points: 4, noTip: true },
+      { name: 'ignored', color: css('--muted'), xs: xs.filter((_, i) => !ml.windows[i].used), ys: ys.filter((_, i) => !ml.windows[i].used), points: 3, noTip: true },
+    ],
+    format: { x: (v) => `window centre ${v.toFixed(2)} s`, y: (v) => `p = ${fmtP(10 ** v)}` },
+  });
+
+  const top = el('div', { class: 'table-scroll' }, el('table', { class: 'terms' },
+    el('thead', {}, el('tr', {}, ['Top AudioSet classes', 'Peak', 'Mean'].map((h) => el('th', {}, h)))),
+    el('tbody', {}, ml.top.slice(0, 6).map((t) => el('tr', {}, el('td', {}, t.name), el('td', { class: 'num' }, fmtP(t.peak)), el('td', { class: 'num' }, fmtP(t.mean))))),
+  ));
+
+  const node = el('div', { class: 'ml-section' },
+    head,
+    kvGrid([
+      ['Model', ml.model],
+      ['Windows scored', `${ml.usedWindows} of ${ml.windows.length} (VAD overlap ≥ ${Math.round(ml.params.minActiveOverlap * 100)}%)`],
+      ['Target probability', `${fmtP(ml.p)} (mean of top-2 windows)`],
+      ['Evidence', `${ml.evidence.toFixed(2)} (log₁₀ p mapped ${ml.params.logLo}→0, ${ml.params.logHi}→1)`],
+      ['Share of 7 animals', `${ml.share.toFixed(2)} (prior ${ml.params.sharePrior} each)`],
+      ['Recognition', `${ml.match.toFixed(2)} = evidence × share`],
+      ['Score effect', `DSP ${score.dspScore.toFixed(1)} → ${score.score} (${ml.bonus >= 0.05 ? `+${ml.bonus.toFixed(1)}` : 'no bonus'})`],
+      ['Embedding', `${ml.embedding.dim}-d · mean ‖e‖ ${ml.embedding.meanNorm.toFixed(2)} · frame-to-frame cos ${ml.embedding.stationarity == null ? '—' : ml.embedding.stationarity.toFixed(3)}`],
+      ['Inference', `${ml.ms.toFixed(1)} ms`],
+    ]),
+    el('div', { class: 'chart-title ml-sub' }, 'Animal-class probabilities (log scale, 1e-5 → 1)'),
+    bars,
+    el('div', {}, box, legend([['Window used', color], ['Window outside voice activity', css('--muted')]])),
+    top,
+  );
+  return { node, render };
+}
+
 // ---------- per-player panels ----------
 
 function scoreHead(name, color, rep, outcome) {
@@ -49,13 +110,15 @@ function scoreHead(name, color, rep, outcome) {
 }
 
 function waterfall(score) {
-  const rows = score.waterfall.map((w) =>
-    el('div', { class: 'wf-row' },
-      el('span', { class: 'wf-label' }, w.label, el('small', {}, w.kind === 'delivery' ? ' delivery' : '')),
-      el('span', { class: 'wf-track' }, el('span', { class: `wf-fill ${w.kind}`, style: `width:${Math.min(100, w.lost)}%` })),
-      el('span', { class: 'wf-val' }, w.lost >= 0.05 ? `−${w.lost.toFixed(1)}` : '0.0'),
-    ),
-  );
+  const rows = score.waterfall.map((w) => {
+    const gain = w.lost < 0;
+    const mag = Math.abs(w.lost);
+    return el('div', { class: 'wf-row' },
+      el('span', { class: 'wf-label' }, w.label, el('small', {}, { delivery: ' delivery', ml: ' bonus' }[w.kind] || '')),
+      el('span', { class: 'wf-track' }, el('span', { class: `wf-fill ${w.kind}`, style: `width:${Math.min(100, mag)}%` })),
+      el('span', { class: `wf-val${gain && mag >= 0.05 ? ' gain' : ''}` }, mag < 0.05 ? '0.0' : gain ? `+${mag.toFixed(1)}` : `−${mag.toFixed(1)}`),
+    );
+  });
   return el('div', { class: 'waterfall' },
     el('div', { class: 'wf-row wf-total' }, el('span', { class: 'wf-label' }, 'Start'), el('span'), el('span', { class: 'wf-val' }, '100.0')),
     rows,
@@ -256,6 +319,11 @@ function playerPanel(name, color, rep, outcome) {
     rep.score.contour && rep.score.contour.user.length ? add(contourChart(rep.score, color)) : add(fluxChart(a, color)),
     el('h4', {}, 'How the judge scored it'),
     termsTable(rep.score),
+    (() => {
+      const m = mlSection(rep.score, color);
+      if (m.render) renders.push(m.render);
+      return m.node || m;
+    })(),
     add(mfccChart(a)),
     featureDump(a),
   );
@@ -322,11 +390,12 @@ function diagnosticsTable(match) {
         el('td', { class: 'num' }, fmt(rep.analysis?.features.lufsIntegrated, 1)),
         el('td', { class: 'num' }, fmt(m.resampleMs, 1)),
         el('td', { class: 'num' }, fmt(m.serverMs ?? rep.analysis?.analysisMs, 1)),
+        el('td', { class: 'num' }, fmt(m.mlMs, 1)),
         el('td', { class: 'num' }, m.uploadBytes ? `${(m.uploadBytes / 1024).toFixed(0)} KB / ${fmt(m.uploadDelayMs, 0, 'ms')}` : '—'),
       ));
     }
   }
-  const heads = ['Capture', 'Resample', 'Start error', 'Scheduled ahead', 'Raw peak dBFS', 'Clipped', 'DC offset', 'Noise floor dB', 'SNR dB', 'Crest dB', 'Integrated LUFS', 'Resample ms', 'DSP ms', 'Upload'];
+  const heads = ['Capture', 'Resample', 'Start error', 'Scheduled ahead', 'Raw peak dBFS', 'Clipped', 'DC offset', 'Noise floor dB', 'SNR dB', 'Crest dB', 'Integrated LUFS', 'Resample ms', 'DSP ms', 'YAMNet ms', 'Upload'];
   return el('div', { class: 'table-scroll' }, el('table', { class: 'diag' }, el('thead', {}, el('tr', {}, heads.map((h) => el('th', {}, h)))), el('tbody', {}, rows)));
 }
 
@@ -413,7 +482,8 @@ function methodology() {
       el('li', {}, 'Activity: noise floor = 10th-percentile frame RMS; hysteresis VAD at floor + 12 dB (on) / −6 dB (off), gaps ≤ 50 ms merged, segments < 40 ms dropped.'),
       el('li', {}, 'Onsets: half-wave rectified log-magnitude spectral flux normalised to its 99th percentile; peaks above a local mean + 0.1 and an absolute 0.15, ≥ 80 ms apart, confirmed by a ≥ 4 dB energy rise; VAD segment starts are added when no flux onset is within 60 ms.'),
       el('li', {}, 'Loudness: ITU-R BS.1770 K-weighting re-derived at 16 kHz and calibrated to +0.691 dB at 1 kHz; momentary loudness over 400 ms windows; integrated loudness with −70 LUFS absolute and −10 LU relative gates.'),
-      el('li', {}, 'Judging: each feature target scores 1 inside its range and decays as a Gaussian of the distance outside it (in semitones for pitch). Tonal animals also match the pitch contour (48 points, median-centred) against a template with DTW; match = exp(−mean|Δ| / 3 st). Score = 100 · accuracy · (0.6 + 0.3 · volume + 0.1 · gusto); the waterfall gives the exact points each term cost.'),
+      el('li', {}, 'Neural classifier: the same 16 kHz PCM goes through YAMNet (MobileNet-v1 trained on AudioSet, 521 classes; 0.96 s log-mel windows at a 0.48 s hop) on TF.js\u2019s WebAssembly backend. Windows overlapping voice activity by ≥ 25% are kept; each animal\u2019s clip probability is the mean of its two best windows over its AudioSet classes (e.g. Dog/Bark/Yip/Bow-wow). Recognition = evidence × share, where evidence log-scales the target probability from 1e-3→0 to 0.3→1 and share is the target\u2019s fraction of all seven animals with a 1e-3 prior.'),
+      el('li', {}, 'Judging: each feature target scores 1 inside its range and decays as a Gaussian of the distance outside it (in semitones for pitch). Tonal animals also match the pitch contour (48 points, median-centred) against a template with DTW; match = exp(−mean|Δ| / 3 st). DSP = 100 · accuracy · (0.6 + 0.3 · volume + 0.1 · gusto). Final = DSP + 0.3 · max(0, 100 · recognition − DSP), so the classifier\u2019s 30% share can raise a score toward its verdict but never lowers it. The waterfall gives the exact points each term cost or added.'),
     ),
   );
 }

@@ -176,13 +176,21 @@ function targetScore(t, value) {
 const volumeOf = (f) => clamp01((f.lufsMax + 45) / 33); // -45 LUFS → 0, -12 LUFS → 1
 const gustoOf = (f) => 0.5 * clamp01(f.activeSec / 1.5) + 0.5 * clamp01(f.attackDb / 20);
 
-// score = 100 · accuracy · (0.6 + 0.3·volume + 0.1·gusto)
+// dsp   = 100 · accuracy · (0.6 + 0.3·volume + 0.1·gusto)
+// score = dsp + ML_WEIGHT · max(0, 100·recognition − dsp)
+//
+// `recognition` (0–1) comes from the YAMNet classifier on the server. Its 30%
+// share can only raise a score: imitations that the classifier doesn't
+// recognise keep their DSP score, while ones it is confident about pull up to
+// 30% of the way toward the classifier's verdict.
 //
 // Points lost are reported as an exact additive waterfall from 100:
 //   accuracy term k loses 100 · w_k(1 − s_k)/Σw
 //   volume  loses 100 · accuracy · 0.3(1 − volume)
 //   gusto   loses 100 · accuracy · 0.1(1 − gusto)
-export function scoreBark(animalId, analysis) {
+export const ML_WEIGHT = 0.3;
+
+export function scoreBark(animalId, analysis, ml = null) {
   const animal = ANIMALS[animalId];
   const f = analysis.features;
   const silent = f.activeFrames < 8;
@@ -213,13 +221,17 @@ export function scoreBark(animalId, analysis) {
   const accuracy = terms.reduce((a, t) => a + t.weight * t.sub, 0);
   const volume = silent ? 0 : volumeOf(f);
   const gusto = silent ? 0 : gustoOf(f);
-  const score = Math.round(100 * accuracy * (0.6 + 0.3 * volume + 0.1 * gusto));
+  const dsp = 100 * accuracy * (0.6 + 0.3 * volume + 0.1 * gusto);
+  const recognition = silent || !ml ? null : ml.match;
+  const bonus = recognition == null ? 0 : ML_WEIGHT * Math.max(0, 100 * recognition - dsp);
+  const score = Math.round(dsp + bonus);
 
   const waterfall = [
     ...terms.map((t) => ({ label: t.label, lost: t.lost, kind: 'accuracy' })),
     { label: 'Volume', lost: 100 * accuracy * 0.3 * (1 - volume), kind: 'delivery' },
     { label: 'Gusto', lost: 100 * accuracy * 0.1 * (1 - gusto), kind: 'delivery' },
   ];
+  if (ml) waterfall.push({ label: 'YAMNet recognition', lost: -bonus, kind: 'ml' });
 
   const worst = terms.reduce((a, b) => (b.lost > a.lost ? b : a));
   const hint = silent
@@ -233,7 +245,9 @@ export function scoreBark(animalId, analysis) {
   return {
     animal: animalId,
     score,
-    breakdown: { volume, accuracy, gusto },
+    dspScore: Math.round(dsp * 10) / 10,
+    breakdown: { volume, accuracy, gusto, recognition },
+    ml: ml && { ...ml, bonus },
     terms,
     waterfall,
     contour: contour && {

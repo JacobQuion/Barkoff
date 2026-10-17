@@ -42,7 +42,11 @@ WebRTC peer call (video/audio) + getStats() sampler        relays WebRTC signall
   - Voice-activity detection: a noise-floor estimate with hysteresis.
   - Onset detection: spectral-flux peak picking, confirmed by a rise in energy.
   - ITU-R BS.1770 loudness (K-weighting re-derived at 16 kHz and calibrated at 1 kHz; momentary and gated integrated LUFS).
-- **Judge** (`public/dsp/score.js`). Each animal has weighted feature targets, each scored by a Gaussian falloff outside its range (in semitones for pitch). Tonal animals also have their pitch contour matched to a template with DTW (Sakoe–Chiba band). The formula is `score = 100 · accuracy · (0.6 + 0.3·volume + 0.1·gusto)`, and the result includes an exact breakdown of the points each term cost.
+- **Neural classifier** (`ml/yamnet.js`). The server also runs [YAMNet](https://github.com/tensorflow/models/tree/master/research/audioset/yamnet), Google's MobileNet-v1 sound-event model trained on AudioSet (521 classes). It runs on TF.js's WebAssembly backend in about 25 ms per clip, and the model files are in `models/yamnet`.
+  - Only windows that overlap voice activity are scored.
+  - Each animal maps to its AudioSet classes (e.g. Dog/Bark/Yip/Bow-wow).
+  - `recognition = evidence × share`, where evidence is the log-scaled target probability and share is the target's lead over the other six animals.
+- **Judge** (`public/dsp/score.js`). Each animal has weighted feature targets, each scored by a Gaussian falloff outside its range (in semitones for pitch). Tonal animals also have their pitch contour matched to a template with DTW (Sakoe–Chiba band). The DSP score is `100 · accuracy · (0.6 + 0.3·volume + 0.1·gusto)`. The final score is `DSP + 0.3 · max(0, 100·recognition − DSP)`, so YAMNet's 30% can raise a score but never lowers it. The result includes an exact breakdown of the points each term cost or added.
 - **Match report** (`public/report.js`, `public/plot.js`). Opens after the final round, and practice rounds have one too. It shows:
   - Per-round, per-player log-mel spectrograms with f0 and onsets overlaid, and loudness / RMS tracks.
   - DTW alignment against the template, or the onset-detection curve for animals without one.
@@ -55,6 +59,7 @@ To add an animal, add an entry to `ANIMALS` in `public/dsp/score.js` with featur
 
 ## Known limitations / next steps
 
+- YAMNet was trained on real animals, so it rarely recognizes human imitations (in tests with synthesized voices it gave a bonus to about 4% of clips). That's why it only adds points.
 - Scoring is server-side, but the audio itself still comes from the client. Someone could feed in a pre-recorded "perfect" bark.
 - Only a public STUN server is configured. Players behind strict NATs won't connect without a TURN server (e.g. coturn).
 - The thresholds in `public/dsp/score.js` are first guesses. Use Practice mode and its report to tune them on real voices.

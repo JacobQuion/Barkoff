@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws';
 import { analyze, serializeAnalysis, decodePcm16, SAMPLE_RATE } from './public/dsp/analyze.js';
 import { fromInt16 } from './public/dsp/resample.js';
 import { scoreBark, ANIMAL_IDS } from './public/dsp/score.js';
+import { loadYamnet, classify, recognitionFor, yamnetStatus } from './ml/yamnet.js';
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -22,6 +23,7 @@ const COUNTDOWN_MS = 3000;
 const RECORD_MS = 4000;
 const UPLOAD_GRACE_MS = 8000;
 const BETWEEN_ROUNDS_MS = 6000;
+const HOP_SEC_DSP = 0.01; // analyze() frame hop
 const MAX_SAMPLES = Math.ceil(SAMPLE_RATE * (RECORD_MS / 1000) * 1.05);
 
 const MIME = {
@@ -168,30 +170,67 @@ function leaveRoom(player) {
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 const META_FIELDS = ['inputRate', 'captureFrames', 'startErrorMs', 'scheduleLeadMs', 'syncOffsetMs', 'syncRttMs', 'baseLatencyMs', 'outputLatencyMs', 'rawPeakDbfs', 'rawClipRatio', 'resampleMs'];
 
-function onAudio(player, msg) {
-  const room = player.room;
-  if (!room || msg.round !== room.round || typeof msg.pcm !== 'string') return;
-  const i = room.players.indexOf(player);
-  if (room.reports[i]) return;
-
-  const receivedAt = Date.now();
-  const t0 = performance.now();
+function readUpload(msg) {
   let pcm = decodePcm16(msg.pcm);
   if (pcm.length > MAX_SAMPLES) pcm = pcm.subarray(0, MAX_SAMPLES);
-  const analysis = analyze(fromInt16(pcm), SAMPLE_RATE);
-  const score = scoreBark(room.animal, analysis);
-  const serverMs = performance.now() - t0;
-
   const meta = Object.fromEntries(META_FIELDS.map((k) => [k, num(msg.meta?.[k])]));
   meta.samples = pcm.length;
   meta.uploadBytes = msg.pcm.length;
-  meta.uploadDelayMs = receivedAt - (room.recordStartAt + RECORD_MS);
-  meta.serverMs = Math.round(serverMs * 10) / 10;
-  meta.scoredBy = 'server';
+  return { pcm: fromInt16(pcm), meta };
+}
 
-  room.reports[i] = { analysis: serializeAnalysis(analysis), score, meta };
-  console.log(`[room] r${room.round} ${player.name}: ${score.score} (${room.animal}) dsp ${serverMs.toFixed(1)} ms`);
+// DSP analysis + YAMNet recognition + judge. Returns a report ready to send.
+async function judge(animal, pcm, meta) {
+  const t0 = performance.now();
+  const analysis = analyze(pcm, SAMPLE_RATE);
+  const dspMs = performance.now() - t0;
+  let ml = null;
+  try {
+    const yam = await classify(pcm);
+    ml = recognitionFor(yam, analysis.tracks.active, animal, HOP_SEC_DSP);
+  } catch (err) {
+    console.error('yamnet failed', err);
+  }
+  const score = scoreBark(animal, analysis, ml);
+  meta.serverMs = Math.round(dspMs * 10) / 10;
+  meta.mlMs = ml ? ml.ms : null;
+  meta.mlStatus = yamnetStatus();
+  meta.scoredBy = 'server';
+  return { analysis: serializeAnalysis(analysis), score, meta };
+}
+
+async function onAudio(player, msg) {
+  const room = player.room;
+  if (!room || msg.round !== room.round || typeof msg.pcm !== 'string') return;
+  const i = room.players.indexOf(player);
+  if (room.reports[i] || room.pending?.[i]) return;
+  (room.pending ||= [false, false])[i] = true;
+
+  const receivedAt = Date.now();
+  const { pcm, meta } = readUpload(msg);
+  meta.uploadDelayMs = receivedAt - (room.recordStartAt + RECORD_MS);
+  const round = room.round;
+  const report = await judge(room.animal, pcm, meta);
+  room.pending[i] = false;
+  // The room may have moved on (timeout, opponent left) while we were scoring.
+  if (player.room !== room || room.round !== round || room.reports[i]) return;
+
+  room.reports[i] = report;
+  const ml = report.score.ml;
+  console.log(`[room] r${room.round} ${player.name}: ${report.score.score} (${room.animal}) dsp ${report.score.dspScore} ${meta.serverMs} ms · yamnet p=${ml?.p ?? '-'} match=${ml?.match ?? '-'} ${meta.mlMs ?? '-'} ms`);
   if (room.reports[0] && room.reports[1]) finishRound(room);
+}
+
+async function onPractice(player, msg) {
+  if (player.practiceBusy || typeof msg.pcm !== 'string' || !ANIMAL_IDS.includes(msg.animal)) return;
+  player.practiceBusy = true;
+  try {
+    const { pcm, meta } = readUpload(msg);
+    const report = await judge(msg.animal, pcm, meta);
+    send(player, { type: 'practiceResult', id: msg.id, report });
+  } finally {
+    player.practiceBusy = false;
+  }
 }
 
 wss.on('connection', (ws) => {
@@ -226,11 +265,10 @@ wss.on('connection', (ws) => {
         send(opponentOf(player), { type: 'signal', data: msg.data });
         break;
       case 'audio':
-        try {
-          onAudio(player, msg);
-        } catch (err) {
-          console.error('audio analysis failed', err);
-        }
+        onAudio(player, msg).catch((err) => console.error('audio analysis failed', err));
+        break;
+      case 'practice':
+        onPractice(player, msg).catch((err) => console.error('practice analysis failed', err));
         break;
     }
   });
@@ -244,3 +282,5 @@ wss.on('connection', (ws) => {
 server.listen(PORT, () => {
   console.log(`Barkoff running at http://localhost:${PORT}`);
 });
+
+loadYamnet().then((ok) => console.log(`YAMNet ${ok ? 'loaded' : yamnetStatus()}`));

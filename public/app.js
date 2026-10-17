@@ -270,6 +270,7 @@ function renderResult(el, score, outcome, showHint) {
     bar('Accuracy', score.breakdown.accuracy) +
     bar('Volume', score.breakdown.volume) +
     bar('Gusto', score.breakdown.gusto) +
+    (score.breakdown.recognition != null ? bar('YAMNet', score.breakdown.recognition) : '') +
     (showHint ? `<div class="hint-line"></div>` : '');
   el.querySelector('.label').textContent = score.label;
   if (showHint) el.querySelector('.hint-line').textContent = `Tip: ${score.hint}`;
@@ -305,6 +306,30 @@ function snapshotClock() {
 
 // ---------- practice ----------
 
+// Practice rounds go through the same server judge as matches (DSP + YAMNet).
+// If the server can't be reached, fall back to DSP-only scoring in the browser.
+const practiceWaits = new Map();
+
+async function judgeOnServer(animal, pcm16k, meta) {
+  try {
+    if (!ws) await connect();
+  } catch {
+    return null;
+  }
+  const id = Math.random().toString(36).slice(2);
+  const result = new Promise((resolve) => {
+    practiceWaits.set(id, resolve);
+    setTimeout(() => practiceWaits.delete(id) && resolve(null), 10000);
+  });
+  send({ type: 'practice', id, animal, pcm: encodePcm16(toInt16(pcm16k)), meta });
+  return result;
+}
+
+function judgeLocally(animal, pcm16k, meta) {
+  const analysis = analyze(pcm16k, SAMPLE_RATE);
+  return { analysis: serializeAnalysis(analysis), score: scoreBark(animal, analysis), meta: { ...meta, scoredBy: 'browser', mlStatus: 'not run (offline)' } };
+}
+
 async function startPractice() {
   if (mode !== 'practice' || !match) match = newMatch('practice');
   mode = 'practice';
@@ -322,12 +347,11 @@ async function startPractice() {
   if (!cap || mode !== 'practice') return;
 
   const { pcm16k, meta } = prepareUpload(cap);
-  const analysis = analyze(pcm16k, SAMPLE_RATE);
-  const score = scoreBark(animal, analysis);
-  meta.scoredBy = 'browser';
-  match.rounds.push({ round: match.rounds.length + 1, animal, outcome: null, you: { analysis: serializeAnalysis(analysis), score, meta }, them: null });
+  const report = (await judgeOnServer(animal, pcm16k, meta)) || judgeLocally(animal, pcm16k, meta);
+  if (mode !== 'practice') return;
+  match.rounds.push({ round: match.rounds.length + 1, animal, outcome: null, you: report, them: null });
   $('countdown').textContent = '';
-  renderResult($('youResult'), score, null, true);
+  renderResult($('youResult'), report.score, null, true);
   $('reportBtn').hidden = false;
 }
 
@@ -375,6 +399,12 @@ async function findMatch() {
 function onMessage(msg) {
   if (msg.type === 'pong') {
     onPong(msg);
+    return;
+  }
+  if (msg.type === 'practiceResult') {
+    const resolve = practiceWaits.get(msg.id);
+    practiceWaits.delete(msg.id);
+    if (resolve) resolve(msg.report);
     return;
   }
   if (mode !== 'online') return;

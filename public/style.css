@@ -538,3 +538,15 @@ body.home main { max-width: none; padding: 0; }
   .mini-logo { font-size: 1.7rem; }
 }
 @media (prefers-reduced-motion: reduce) { .banner.go .countdown { animation: none; } }
+
+/* YAMNet section in the report */
+.wf-fill.ml { background: var(--win); }
+.wf-val.gain { color: var(--win); }
+.ml-section { display: grid; gap: 10px; }
+.ml-section h4 { margin: 4px 0 0; }
+.ml-sub { font-size: 0.85rem; margin-top: 4px; }
+.ml-bars { display: grid; gap: 4px; font-size: 0.82rem; }
+.ml-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 64px; gap: 8px; align-items: center; color: var(--muted); }
+.ml-row.target { color: var(--fg); font-weight: 700; }
+.ml-row .num { text-align: right; }
+.ml-fill { display: block; height: 100%; border-radius: 4px; background: var(--grid-strong); }
