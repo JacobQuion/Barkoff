@@ -32,7 +32,7 @@
       <p id="lobbyError" class="error"></p>
     </section>
 
-    <section id="arena" class="screen hidden">
+    <section id="arena" class="screen" hidden>
       <div id="status" class="status"></div>
 
       <div id="banner" class="banner idle">
@@ -59,10 +59,13 @@
       </div>
 
       <div class="buttons">
+        <button id="reportBtn" class="secondary" hidden>View match report</button>
         <button id="nextBtn">Next opponent</button>
         <button id="leaveBtn" class="secondary">Leave</button>
       </div>
     </section>
+
+    <section id="report" class="screen" hidden></section>
   </main>
 
   <script type="module" src="app.js"></script>

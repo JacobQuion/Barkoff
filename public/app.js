@@ -1,9 +1,13 @@
-import { ANIMALS, BarkRecorder, scoreBark, labelFor } from './scoring.js';
+import { analyze, serializeAnalysis, encodePcm16, SAMPLE_RATE } from './dsp/analyze.js';
+import { resample, toInt16 } from './dsp/resample.js';
+import { ANIMALS, ANIMAL_IDS, scoreBark } from './dsp/score.js';
+import { renderReport } from './report.js';
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const wallNow = () => performance.timeOrigin + performance.now();
 const PRACTICE_COUNTDOWN_MS = 3000;
-const PRACTICE_RECORD_MS = 4000;
+const RECORD_MS = 4000;
 
 let mode = null; // 'online' | 'practice' | null
 let ws = null;
@@ -16,18 +20,55 @@ let audioCtx = null;
 let localAnalyser = null;
 let remoteAnalyser = null;
 let remoteSource = null;
-let frameMs = 21;
-const tickListeners = new Set();
+let captureNode = null;
+let captureJobs = new Map();
+let nextJobId = 1;
 
-let recorder = null;
 let roundToken = 0;
-let myLastResult = null;
+let match = null; // everything the report needs, accumulated during play
+let disposeReport = null;
+
+// ---------- clock sync (NTP-style, minimum-RTT filter) ----------
+
+const clock = { samples: [], offsetMs: 0, rttMs: null, pending: new Map(), timer: null };
+
+function ping() {
+  const id = Math.random().toString(36).slice(2);
+  clock.pending.set(id, wallNow());
+  send({ type: 'ping', id });
+}
+
+function onPong({ id, ts }) {
+  const t0 = clock.pending.get(id);
+  if (t0 == null) return;
+  clock.pending.delete(id);
+  const t1 = wallNow();
+  const rtt = t1 - t0;
+  clock.samples.push({ rtt, offset: ts - (t0 + t1) / 2 });
+  if (clock.samples.length > 30) clock.samples.shift();
+  // The sample with the smallest round trip has the tightest error bound (±RTT/2).
+  const best = clock.samples.reduce((a, b) => (b.rtt < a.rtt ? b : a));
+  clock.offsetMs = best.offset;
+  clock.rttMs = best.rtt;
+}
+
+async function startClockSync() {
+  clearInterval(clock.timer);
+  clock.samples = [];
+  for (let i = 0; i < 10; i++) {
+    ping();
+    await sleep(80);
+  }
+  clock.timer = setInterval(ping, 5000);
+}
+
+const serverToPerf = (serverMs) => serverMs - clock.offsetMs - performance.timeOrigin;
 
 // ---------- media & audio ----------
 
 async function ensureMedia() {
   if (localStream) return;
-  const audio = { echoCancellation: true, noiseSuppression: false, autoGainControl: false };
+  const audio = { echoCancellation: true, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio, video: $('cam').checked });
   } catch (err) {
@@ -37,18 +78,22 @@ async function ensureMedia() {
   $('localVideo').srcObject = localStream;
 
   audioCtx = new AudioContext();
-  await audioCtx.audioWorklet.addModule('tick-worklet.js');
+  await audioCtx.audioWorklet.addModule('capture-worklet.js');
   const source = audioCtx.createMediaStreamSource(localStream);
   localAnalyser = makeAnalyser();
   source.connect(localAnalyser);
 
-  // The tick node only needs to be pulled by the graph; its output is silent.
-  const tick = new AudioWorkletNode(audioCtx, 'tick');
+  // The capture node must be pulled by the graph to run; its output is silent.
+  captureNode = new AudioWorkletNode(audioCtx, 'capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: 'explicit' });
   const mute = audioCtx.createGain();
   mute.gain.value = 0;
-  source.connect(tick).connect(mute).connect(audioCtx.destination);
-  tick.port.onmessage = () => tickListeners.forEach((fn) => fn());
-  frameMs = (8 * 128 * 1000) / audioCtx.sampleRate;
+  source.connect(captureNode).connect(mute).connect(audioCtx.destination);
+  captureNode.port.onmessage = ({ data }) => {
+    const job = captureJobs.get(data.id);
+    if (!job) return;
+    captureJobs.delete(data.id);
+    job.resolve(data);
+  };
 
   startSpectrogram($('localSpec'), () => localAnalyser);
   startSpectrogram($('remoteSpec'), () => remoteAnalyser);
@@ -61,9 +106,64 @@ function makeAnalyser() {
   return a;
 }
 
-function subscribeTick(fn) {
-  tickListeners.add(fn);
-  return () => tickListeners.delete(fn);
+// Map a performance.now() instant onto the AudioContext timeline.
+function perfToContextTime(perfMs) {
+  const ts = audioCtx.getOutputTimestamp ? audioCtx.getOutputTimestamp() : null;
+  if (ts && ts.performanceTime) return ts.contextTime + (perfMs - ts.performanceTime) / 1000;
+  return audioCtx.currentTime + (perfMs - performance.now()) / 1000;
+}
+
+// Schedule a sample-accurate capture on the audio thread.
+function capture(startPerfMs, durationMs) {
+  const id = nextJobId++;
+  const startTime = perfToContextTime(startPerfMs);
+  const frames = Math.round((durationMs / 1000) * audioCtx.sampleRate);
+  const scheduleLeadMs = (startTime - audioCtx.currentTime) * 1000;
+  const promise = new Promise((resolve, reject) => {
+    captureJobs.set(id, { resolve });
+    setTimeout(() => {
+      if (captureJobs.delete(id)) reject(new Error('capture timed out'));
+    }, Math.max(0, startPerfMs - performance.now()) + durationMs + 3000);
+  });
+  captureNode.port.postMessage({ cmd: 'start', id, startTime, frames });
+  return {
+    id,
+    promise: promise.then((d) => ({ ...d, startErrorMs: (d.began - startTime) * 1000, scheduleLeadMs })),
+  };
+}
+
+function cancelCaptures() {
+  for (const id of captureJobs.keys()) captureNode?.port.postMessage({ cmd: 'cancel', id });
+  captureJobs.clear();
+}
+
+function prepareUpload(cap) {
+  const raw = cap.samples;
+  let peak = 0, clipped = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const a = Math.abs(raw[i]);
+    if (a > peak) peak = a;
+    if (a >= 0.999) clipped++;
+  }
+  const t0 = performance.now();
+  const pcm16k = resample(raw, cap.sampleRate, SAMPLE_RATE);
+  const resampleMs = performance.now() - t0;
+  return {
+    pcm16k,
+    meta: {
+      inputRate: cap.sampleRate,
+      captureFrames: raw.length,
+      startErrorMs: cap.startErrorMs,
+      scheduleLeadMs: cap.scheduleLeadMs,
+      syncOffsetMs: clock.offsetMs,
+      syncRttMs: clock.rttMs,
+      baseLatencyMs: (audioCtx.baseLatency || 0) * 1000,
+      outputLatencyMs: (audioCtx.outputLatency || 0) * 1000,
+      rawPeakDbfs: 20 * Math.log10(peak + 1e-9),
+      rawClipRatio: clipped / raw.length,
+      resampleMs,
+    },
+  };
 }
 
 function startSpectrogram(canvas, getAnalyser) {
@@ -90,7 +190,7 @@ function startSpectrogram(canvas, getAnalyser) {
     for (let y = 0; y < h; y++) {
       const hz = minHz * Math.pow(maxHz / minHz, 1 - y / h); // log frequency axis
       const v = data[Math.min(data.length - 1, Math.round((hz / nyquist) * data.length))];
-      ctx.fillStyle = `hsl(${280 - v * 0.9}, 100%, ${(v / 255) * 60}%)`;
+      ctx.fillStyle = `hsl(${30 + v * 0.06}, 100%, ${(v / 255) * 70}%)`;
       ctx.fillRect(w - 2, y, 2, 1);
     }
   })();
@@ -100,40 +200,44 @@ function startSpectrogram(canvas, getAnalyser) {
 
 function cancelRound() {
   roundToken++;
-  if (recorder) recorder.cancel();
-  recorder = null;
+  cancelCaptures();
   $('banner').classList.remove('go');
   $('youCard').classList.remove('recording');
 }
 
-async function runRound({ roundLabel, animal, countdownMs, recordMs }) {
+// Counts down to `startPerfMs`, captures RECORD_MS, returns the capture.
+async function runRound({ roundLabel, animal, startPerfMs, recordMs }) {
   cancelRound();
   const token = roundToken;
   const a = ANIMALS[animal];
   clearResults();
   setBanner({ round: roundLabel, emoji: a.emoji, sound: a.sound, tip: `${a.name} · ${a.tip}`, countdown: '' });
 
-  const steps = Math.max(1, Math.round(countdownMs / 1000));
-  for (let i = steps; i > 0; i--) {
-    $('countdown').textContent = i;
-    await sleep(countdownMs / steps);
+  const job = capture(startPerfMs, recordMs);
+
+  for (;;) {
+    const left = startPerfMs - performance.now();
+    if (left <= 0) break;
+    $('countdown').textContent = Math.ceil(left / 1000);
+    await sleep(Math.min(left, (left % 1000) + 5));
     if (token !== roundToken) return null;
   }
 
   $('countdown').textContent = 'GO!';
   $('banner').classList.add('go');
   $('youCard').classList.add('recording');
-  recorder = new BarkRecorder(localAnalyser, audioCtx.sampleRate, subscribeTick, frameMs);
-  const features = await recorder.record(recordMs);
+  let cap;
+  try {
+    cap = await job.promise;
+  } catch (err) {
+    console.warn(err);
+    cap = null;
+  }
   if (token !== roundToken) return null;
-
-  recorder = null;
   $('banner').classList.remove('go');
   $('youCard').classList.remove('recording');
   $('countdown').textContent = 'Judging…';
-  const result = scoreBark(animal, features);
-  console.debug('bark features', animal, features, result);
-  return result;
+  return cap;
 }
 
 function clearResults() {
@@ -150,20 +254,21 @@ function setBanner({ round = '', emoji = '🐾', sound = '', tip = '', countdown
   $('countdown').textContent = countdown;
 }
 
-function renderResult(el, r, outcome) {
+function renderResult(el, score, outcome, showHint) {
   const pct = (x) => Math.round(x * 100);
   const bar = (name, x) =>
     `<div class="bar"><span>${name}</span><div class="track"><div class="fill" style="width:${pct(x)}%"></div></div></div>`;
   const outcomeText = { win: 'WINS', lose: '', tie: 'TIE' }[outcome] || '';
   el.innerHTML =
-    `<div><span class="big">${r.score}</span><span class="label">${labelFor(r.score)}</span>` +
+    `<div><span class="big">${Number(score.score)}</span><span class="label"></span>` +
     (outcomeText ? `<span class="outcome ${outcome}">${outcomeText}</span>` : '') +
     `</div>` +
-    bar('Volume', r.breakdown.volume) +
-    bar('Accuracy', r.breakdown.accuracy) +
-    bar('Gusto', r.breakdown.gusto) +
-    (r.hint ? `<div class="hint-line"></div>` : '');
-  if (r.hint) el.querySelector('.hint-line').textContent = `Tip: ${r.hint}`;
+    bar('Accuracy', score.breakdown.accuracy) +
+    bar('Volume', score.breakdown.volume) +
+    bar('Gusto', score.breakdown.gusto) +
+    (showHint ? `<div class="hint-line"></div>` : '');
+  el.querySelector('.label').textContent = score.label;
+  if (showHint) el.querySelector('.hint-line').textContent = `Tip: ${score.hint}`;
 }
 
 function setWins(you, them) {
@@ -175,25 +280,51 @@ function setStatus(text) {
   $('status').textContent = text;
 }
 
+function newMatch(modeName, opponent) {
+  return {
+    mode: modeName,
+    startedAt: Date.now(),
+    you: { name: $('name').value.trim() || 'You' },
+    them: { name: opponent || null },
+    rounds: [],
+    wins: { you: 0, them: 0 },
+    outcome: null,
+    clock: null,
+    audio: { sampleRate: audioCtx.sampleRate, baseLatencyMs: (audioCtx.baseLatency || 0) * 1000, outputLatencyMs: (audioCtx.outputLatency || 0) * 1000 },
+    net: { samples: [], path: null, audioCodec: null, videoCodec: null },
+  };
+}
+
+function snapshotClock() {
+  match.clock = { offsetMs: clock.offsetMs, rttMs: clock.rttMs, samples: clock.samples.length };
+}
+
 // ---------- practice ----------
 
 async function startPractice() {
+  if (mode !== 'practice' || !match) match = newMatch('practice');
   mode = 'practice';
   showArena(true);
-  setStatus('Practice mode. Nobody can hear you. Probably.');
-  const ids = Object.keys(ANIMALS);
-  const animal = ids[Math.floor(Math.random() * ids.length)];
+  setStatus('Practice mode. Analysed locally with the same DSP the server uses.');
+  const animal = ANIMAL_IDS[Math.floor(Math.random() * ANIMAL_IDS.length)];
   $('nextBtn').disabled = true;
-  const result = await runRound({
-    roundLabel: 'Practice',
+  const cap = await runRound({
+    roundLabel: `Practice · round ${match.rounds.length + 1}`,
     animal,
-    countdownMs: PRACTICE_COUNTDOWN_MS,
-    recordMs: PRACTICE_RECORD_MS,
+    startPerfMs: performance.now() + PRACTICE_COUNTDOWN_MS,
+    recordMs: RECORD_MS,
   });
   $('nextBtn').disabled = false;
-  if (!result || mode !== 'practice') return;
+  if (!cap || mode !== 'practice') return;
+
+  const { pcm16k, meta } = prepareUpload(cap);
+  const analysis = analyze(pcm16k, SAMPLE_RATE);
+  const score = scoreBark(animal, analysis);
+  meta.scoredBy = 'browser';
+  match.rounds.push({ round: match.rounds.length + 1, animal, outcome: null, you: { analysis: serializeAnalysis(analysis), score, meta }, them: null });
   $('countdown').textContent = '';
-  renderResult($('youResult'), result);
+  renderResult($('youResult'), score, null, true);
+  $('reportBtn').hidden = false;
 }
 
 // ---------- online ----------
@@ -203,12 +334,14 @@ function connect() {
     const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
     sock.onopen = () => {
       ws = sock;
+      startClockSync();
       resolve();
     };
     sock.onerror = () => reject(new Error('Could not reach the Barkoff server.'));
     sock.onmessage = (e) => onMessage(JSON.parse(e.data));
     sock.onclose = () => {
       ws = null;
+      clearInterval(clock.timer);
       if (mode === 'online') {
         cancelRound();
         teardownPeer();
@@ -236,6 +369,10 @@ async function findMatch() {
 }
 
 function onMessage(msg) {
+  if (msg.type === 'pong') {
+    onPong(msg);
+    return;
+  }
   if (mode !== 'online') return;
   switch (msg.type) {
     case 'waiting':
@@ -243,6 +380,7 @@ function onMessage(msg) {
       teardownPeer();
       clearResults();
       setWins(0, 0);
+      $('reportBtn').hidden = true;
       $('themName').textContent = '…';
       setBanner({ emoji: '🐾', sound: 'Sniffing around…', tip: 'Waiting for another barker to show up.' });
       setStatus('Looking for someone to bark at…');
@@ -250,6 +388,8 @@ function onMessage(msg) {
     case 'matched':
       clearResults();
       setWins(0, 0);
+      $('reportBtn').hidden = true;
+      match = newMatch('online', msg.opponent);
       $('themName').textContent = msg.opponent;
       setBanner({ emoji: '👀', sound: `vs ${msg.opponent}`, tip: 'Get ready…' });
       setStatus(`Matched with ${msg.opponent}!`);
@@ -272,32 +412,35 @@ function onMessage(msg) {
       teardownPeer();
       setBanner({ emoji: '💨', sound: `${msg.name} ran away`, tip: 'Hit Next to find someone new.' });
       setStatus('Your opponent left.');
+      $('reportBtn').hidden = !(match && match.rounds.length);
       break;
   }
 }
 
 async function onRound(msg) {
-  myLastResult = null;
-  setStatus(`Round ${msg.round}`);
-  const result = await runRound({
+  setStatus(`Round ${msg.round} · clock offset ${clock.offsetMs.toFixed(1)} ms ± ${((clock.rttMs || 0) / 2).toFixed(1)} ms`);
+  const cap = await runRound({
     roundLabel: msg.round > msg.total ? `Sudden death · Round ${msg.round}` : `Round ${msg.round} of ${msg.total}`,
     animal: msg.animal,
-    countdownMs: msg.countdownMs,
+    startPerfMs: serverToPerf(msg.recordStartAt),
     recordMs: msg.recordMs,
   });
-  if (!result) return;
-  myLastResult = { round: msg.round, ...result };
-  $('youResult').textContent = 'Judging…';
+  if (!cap) return;
+  const { pcm16k, meta } = prepareUpload(cap);
+  $('youResult').textContent = 'Uploading audio…';
   $('themResult').textContent = 'Judging…';
-  send({ type: 'score', round: msg.round, score: result.score, breakdown: result.breakdown });
+  send({ type: 'audio', round: msg.round, pcm: encodePcm16(toInt16(pcm16k)), meta });
+  $('youResult').textContent = 'Judging…';
 }
 
 function onRoundResult(msg) {
   cancelRound();
   $('countdown').textContent = '';
-  const you = { ...msg.you, hint: myLastResult && myLastResult.round === msg.round ? myLastResult.hint : null };
-  renderResult($('youResult'), you, msg.outcome);
-  renderResult($('themResult'), msg.them, msg.outcome === 'win' ? 'lose' : msg.outcome === 'lose' ? 'win' : 'tie');
+  snapshotClock();
+  match.rounds.push({ round: msg.round, animal: msg.animal, outcome: msg.outcome, you: msg.you, them: msg.them });
+  match.wins = msg.wins;
+  renderResult($('youResult'), msg.you.score, msg.outcome, true);
+  renderResult($('themResult'), msg.them.score, msg.outcome === 'win' ? 'lose' : msg.outcome === 'lose' ? 'win' : 'tie', false);
   if (msg.outcome === 'win') $('youCard').classList.add('won');
   if (msg.outcome === 'lose') $('themCard').classList.add('won');
   setWins(msg.wins.you, msg.wins.them);
@@ -305,6 +448,9 @@ function onRoundResult(msg) {
 }
 
 function onGameOver(msg) {
+  match.outcome = msg.outcome;
+  match.wins = msg.wins;
+  snapshotClock();
   const banners = {
     win: { emoji: '🏆', sound: "You're the Top Dog!" },
     lose: { emoji: '🐕‍🦺', sound: 'Out-barked.' },
@@ -313,9 +459,16 @@ function onGameOver(msg) {
   setBanner({
     round: `Final ${msg.wins.you}–${msg.wins.them}`,
     ...banners[msg.outcome],
-    tip: 'Hit Next for a new opponent.',
+    tip: 'Opening the match report…',
   });
+  $('reportBtn').hidden = false;
+  const finished = match;
+  setTimeout(() => {
+    if (match === finished && mode === 'online' && $('report').hidden) showReport();
+  }, 3000);
 }
+
+// ---------- WebRTC ----------
 
 function setupPeer(initiator) {
   teardownPeer();
@@ -339,6 +492,7 @@ function setupPeer(initiator) {
       send({ type: 'signal', data: { sdp: pc.localDescription } });
     };
   }
+  startStatsSampler(pc);
 }
 
 async function handleSignal(data) {
@@ -357,7 +511,76 @@ async function handleSignal(data) {
   }
 }
 
+let statsTimer = null;
+
+// Samples getStats() once a second and stores per-interval deltas.
+function startStatsSampler(conn) {
+  clearInterval(statsTimer);
+  let prev = null;
+  statsTimer = setInterval(async () => {
+    if (conn !== pc || !match) return;
+    let report;
+    try {
+      report = await conn.getStats();
+    } catch {
+      return;
+    }
+    const byType = {};
+    report.forEach((r) => (byType[r.type] ||= []).push(r));
+    const transport = byType.transport?.[0];
+    const pair = (transport?.selectedCandidatePairId && report.get(transport.selectedCandidatePairId)) ||
+      byType['candidate-pair']?.find((p) => p.nominated && p.state === 'succeeded');
+    if (!pair) return;
+    const inbound = byType['inbound-rtp'] || [];
+    const outbound = byType['outbound-rtp'] || [];
+    const inA = inbound.find((r) => r.kind === 'audio');
+    const outA = outbound.find((r) => r.kind === 'audio');
+    const inV = inbound.find((r) => r.kind === 'video');
+    const sum = (rs, k) => rs.reduce((a, r) => a + (r[k] || 0), 0);
+    const cur = {
+      t: performance.now(),
+      bytesIn: sum(inbound, 'bytesReceived'),
+      bytesOut: sum(outbound, 'bytesSent'),
+      audioIn: inA?.bytesReceived || 0,
+      audioOut: outA?.bytesSent || 0,
+      lost: inA?.packetsLost || 0,
+      recv: inA?.packetsReceived || 0,
+      concealed: inA?.concealedSamples || 0,
+      samples: inA?.totalSamplesReceived || 0,
+    };
+    if (prev) {
+      const dt = (cur.t - prev.t) / 1000;
+      const dLost = cur.lost - prev.lost;
+      const dRecv = cur.recv - prev.recv;
+      const dSamples = cur.samples - prev.samples;
+      match.net.samples.push({
+        t: Date.now(),
+        rttMs: pair.currentRoundTripTime != null ? pair.currentRoundTripTime * 1000 : null,
+        jitterMs: inA?.jitter != null ? inA.jitter * 1000 : null,
+        lossPct: dLost + dRecv > 0 ? (100 * Math.max(0, dLost)) / (dLost + dRecv) : 0,
+        concealPct: dSamples > 0 ? (100 * (cur.concealed - prev.concealed)) / dSamples : 0,
+        kbpsIn: ((cur.bytesIn - prev.bytesIn) * 8) / 1000 / dt,
+        kbpsOut: ((cur.bytesOut - prev.bytesOut) * 8) / 1000 / dt,
+        audioKbpsIn: ((cur.audioIn - prev.audioIn) * 8) / 1000 / dt,
+        audioKbpsOut: ((cur.audioOut - prev.audioOut) * 8) / 1000 / dt,
+      });
+      if (match.net.samples.length > 900) match.net.samples.shift();
+    }
+    prev = cur;
+    const local = report.get(pair.localCandidateId);
+    const remote = report.get(pair.remoteCandidateId);
+    if (local && remote) {
+      const relayed = local.candidateType === 'relay' || remote.candidateType === 'relay';
+      match.net.path = `${local.candidateType} ↔ ${remote.candidateType} · ${local.protocol || '?'}${relayed ? ' · relayed (TURN)' : ' · direct'}`;
+    }
+    const codec = (r) => (r?.codecId ? report.get(r.codecId)?.mimeType : null);
+    match.net.audioCodec = codec(inA) || match.net.audioCodec;
+    match.net.videoCodec = codec(inV) || match.net.videoCodec;
+  }, 1000);
+}
+
 function teardownPeer() {
+  clearInterval(statsTimer);
   if (pc) pc.close();
   pc = null;
   pendingCandidates = [];
@@ -371,15 +594,34 @@ function teardownPeer() {
 // ---------- screens ----------
 
 function showArena(solo) {
-  $('lobby').classList.add('hidden');
-  $('arena').classList.remove('hidden');
-  $('themCard').classList.toggle('hidden', solo);
+  $('lobby').hidden = true;
+  $('report').hidden = true;
+  $('arena').hidden = false;
+  $('themCard').hidden = solo;
   document.querySelector('.players').classList.toggle('solo', solo);
   $('nextBtn').textContent = solo ? 'Another animal' : 'Next opponent';
   $('nextBtn').disabled = false;
+  $('reportBtn').textContent = solo ? 'View practice report' : 'View match report';
+  $('reportBtn').hidden = !(match && match.rounds.length && match.mode === (solo ? 'practice' : 'online'));
   clearResults();
-  setWins(0, 0);
+  if (!solo) setWins(0, 0);
   setBanner({});
+}
+
+function showReport() {
+  if (!match || !match.rounds.length) return;
+  if (disposeReport) disposeReport();
+  $('arena').hidden = true;
+  $('report').hidden = false;
+  window.scrollTo(0, 0);
+  disposeReport = renderReport($('report'), match, {
+    onBack: () => {
+      if (disposeReport) disposeReport();
+      disposeReport = null;
+      $('report').hidden = true;
+      $('arena').hidden = false;
+    },
+  });
 }
 
 function showLobby() {
@@ -389,8 +631,10 @@ function showLobby() {
     teardownPeer();
   }
   mode = null;
-  $('arena').classList.add('hidden');
-  $('lobby').classList.remove('hidden');
+  match = null;
+  $('arena').hidden = true;
+  $('report').hidden = true;
+  $('lobby').hidden = false;
 }
 
 async function withMedia(fn) {
@@ -414,8 +658,13 @@ try {
 } catch {}
 
 $('findBtn').onclick = () => withMedia(findMatch);
-$('practiceBtn').onclick = () => withMedia(startPractice);
+$('practiceBtn').onclick = () => withMedia(() => {
+  match = null;
+  mode = null;
+  startPractice();
+});
 $('leaveBtn').onclick = showLobby;
+$('reportBtn').onclick = showReport;
 $('nextBtn').onclick = () => {
   if (mode === 'practice') {
     startPractice();

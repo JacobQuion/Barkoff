@@ -22,21 +22,40 @@ Browsers only allow the mic on `localhost` or HTTPS. To play with friends elsewh
 
 ## How it works
 
-- **`server.js`**: static file server + WebSocket. It keeps a one-person queue for matchmaking, relays WebRTC offers/answers/ICE candidates between the two players, and runs the match: it picks the animal, times the rounds, collects both scores, and decides each round.
-- **`public/app.js`**: UI, camera/mic, the peer-to-peer WebRTC call, and live spectrograms for both players.
-- **`public/scoring.js`**: the judge. During the 4-second window it samples the mic about every 21 ms and extracts:
-  - loudness (dBFS), attack (how sharply sounds start), number of separate bursts, active time
-  - pitch (autocorrelation), pitch glide range, how much of the sound is tonal
-  - spectral centroid (brightness) and flatness (noisiness/growl)
+```
+browser                                                    server (authoritative)
+───────                                                    ──────────────────────
+getUserMedia (AEC on, AGC/NS off)                          ping/pong clock sync
+  └─ AudioWorklet capture: exactly 4.000 s from the         schedules recordStartAt on its clock
+     sample matching the server's start time                  │
+  └─ windowed-sinc resample → 16 kHz int16 ── WebSocket ──▶ DSP pipeline → judge → round result
+WebRTC peer call (video/audio) + getStats() sampler        relays WebRTC signalling
+```
 
-  Each animal sets target ranges for some of these features (a dog = several short, punchy bursts; a cow = a low, steady, long tone; a wolf = one long gliding howl; and so on). **Accuracy** is how well you hit those targets. Final score = `accuracy × (60% + 30% volume + 10% gusto)`, so screaming the wrong animal won't win.
-- **`public/tick-worklet.js`**: an audio-thread clock, so sampling keeps working even when the tab is in the background.
+- **Clock sync.** Each client runs NTP-style ping/pong against the server and keeps the minimum-RTT sample (error ≤ RTT/2). The server sends one `recordStartAt` timestamp. Each client converts it to its own AudioContext time with `getOutputTimestamp()`. The capture worklet then starts on that exact sample, not whenever a main-thread timer happens to fire.
+- **Authoritative scoring.** Clients upload raw 16 kHz PCM, and the server runs the analysis and judging. A modified client can't simply send itself a high score.
+- **DSP pipeline** (`public/dsp/`, the same code in the browser and Node):
+  - 32 ms Hann frames at a 10 ms hop, with a hand-written radix-2 FFT.
+  - Spectral centroid, roll-off, flatness, tilt and zero-crossing rate.
+  - 40-band log-mel spectrogram and 13 MFCCs.
+  - YIN pitch tracking with parabolic refinement, plus an HNR estimate.
+  - Voice-activity detection: a noise-floor estimate with hysteresis.
+  - Onset detection: spectral-flux peak picking, confirmed by a rise in energy.
+  - ITU-R BS.1770 loudness (K-weighting re-derived at 16 kHz and calibrated at 1 kHz; momentary and gated integrated LUFS).
+- **Judge** (`public/dsp/score.js`). Each animal has weighted feature targets, each scored by a Gaussian falloff outside its range (in semitones for pitch). Tonal animals also have their pitch contour matched to a template with DTW (Sakoe–Chiba band). The formula is `score = 100 · accuracy · (0.6 + 0.3·volume + 0.1·gusto)`, and the result includes an exact breakdown of the points each term cost.
+- **Match report** (`public/report.js`, `public/plot.js`). Opens after the final round, and practice rounds have one too. It shows:
+  - Per-round, per-player log-mel spectrograms with f0 and onsets overlaid, and loudness / RMS tracks.
+  - DTW alignment against the template, or the onset-detection curve for animals without one.
+  - The judge's scoring breakdown, and MFCC heatmaps.
+  - Capture diagnostics: start error, clipping, DC offset, SNR, crest factor, DSP and upload timing.
+  - Clock-sync error bounds, and WebRTC stats (RTT, jitter, loss, concealment, codecs, ICE path).
+  - A raw JSON export.
 
-To add an animal, add an entry to `ANIMALS` in `public/scoring.js` and its id to `ANIMALS` in `server.js`.
+To add an animal, add an entry to `ANIMALS` in `public/dsp/score.js` with feature targets and, optionally, a pitch-contour template.
 
 ## Known limitations / next steps
 
-- **Scores are computed in the browser and trusted by the server**, so anyone can cheat with devtools. The fix is to send the raw features (or audio) to the server and score them there.
+- Scoring is server-side, but the audio itself still comes from the client. Someone could feed in a pre-recorded "perfect" bark.
 - Only a public STUN server is configured. Players behind strict NATs won't connect without a TURN server (e.g. coturn).
-- The thresholds in `scoring.js` are first guesses. Use Practice mode with the devtools console open (features are logged via `console.debug`) to tune them on real voices.
+- The thresholds in `public/dsp/score.js` are first guesses. Use Practice mode and its report to tune them on real voices.
 - Without headphones, echo cancellation usually stops your opponent's bark from counting as yours, but not always.

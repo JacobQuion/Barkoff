@@ -9,5 +9,6 @@
   "license": "MIT",
   "dependencies": {
     "ws": "^8.18.0"
-  }
+  },
+  "type": "module"
 }

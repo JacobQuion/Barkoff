@@ -1,22 +1,28 @@
 // Barkoff server: serves the static client, pairs strangers, relays WebRTC
-// signaling, and referees best-of-N barking matches.
+// signaling, keeps clients clock-synced, and referees matches. Scoring is
+// authoritative: clients upload 16 kHz PCM and the server runs the DSP
+// pipeline itself, so a modified client can't simply report a high score.
 
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const { WebSocketServer } = require('ws');
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { WebSocketServer } from 'ws';
+import { analyze, serializeAnalysis, decodePcm16, SAMPLE_RATE } from './public/dsp/analyze.js';
+import { fromInt16 } from './public/dsp/resample.js';
+import { scoreBark, ANIMAL_IDS } from './public/dsp/score.js';
 
 const PORT = process.env.PORT || 3000;
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
-const ANIMALS = ['dog', 'wolf', 'cat', 'cow', 'lion', 'rooster', 'duck'];
 const ROUNDS = 3;            // best of 3...
 const MAX_ROUNDS = 5;        // ...with sudden death on ties, up to 5
 const MATCH_START_MS = 4000; // time for the video call to connect
 const COUNTDOWN_MS = 3000;
 const RECORD_MS = 4000;
-const SCORE_GRACE_MS = 4000; // how long to wait for late scores
-const BETWEEN_ROUNDS_MS = 5000;
+const UPLOAD_GRACE_MS = 8000;
+const BETWEEN_ROUNDS_MS = 6000;
+const MAX_SAMPLES = Math.ceil(SAMPLE_RATE * (RECORD_MS / 1000) * 1.05);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -44,7 +50,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 1 << 20 });
 
 let waiting = null; // the one player currently in the queue
 let nextId = 1;
@@ -71,38 +77,44 @@ function enqueue(player) {
 }
 
 function startMatch(a, b) {
-  const room = { players: [a, b], round: 0, wins: [0, 0], scores: [null, null], animal: null, timer: null };
+  const room = { players: [a, b], round: 0, wins: [0, 0], reports: [null, null], animal: null, timer: null, recordStartAt: 0 };
   a.room = room;
   b.room = room;
   // The player who waited longer makes the WebRTC offer.
-  send(a, { type: 'matched', opponent: b.name, initiator: true });
-  send(b, { type: 'matched', opponent: a.name, initiator: false });
+  send(a, { type: 'matched', opponent: b.name, initiator: true, rounds: ROUNDS });
+  send(b, { type: 'matched', opponent: a.name, initiator: false, rounds: ROUNDS });
   room.timer = setTimeout(() => startRound(room), MATCH_START_MS);
 }
 
 function startRound(room) {
   room.round++;
-  const choices = ANIMALS.filter((a) => a !== room.animal);
+  const choices = ANIMAL_IDS.filter((a) => a !== room.animal);
   room.animal = choices[Math.floor(Math.random() * choices.length)];
-  room.scores = [null, null];
+  room.reports = [null, null];
+  // Both clients start recording at the same instant on the server's clock;
+  // each converts it to local time using its NTP-style offset estimate.
+  room.recordStartAt = Date.now() + COUNTDOWN_MS;
   for (const p of room.players) {
     send(p, {
       type: 'round',
       round: room.round,
       total: ROUNDS,
       animal: room.animal,
-      countdownMs: COUNTDOWN_MS,
+      recordStartAt: room.recordStartAt,
       recordMs: RECORD_MS,
+      serverNow: Date.now(),
     });
   }
-  room.timer = setTimeout(() => finishRound(room), COUNTDOWN_MS + RECORD_MS + SCORE_GRACE_MS);
+  room.timer = setTimeout(() => finishRound(room), COUNTDOWN_MS + RECORD_MS + UPLOAD_GRACE_MS);
 }
 
 function finishRound(room) {
   clearTimeout(room.timer);
-  const empty = { score: 0, breakdown: { volume: 0, accuracy: 0, gusto: 0 } };
-  const [s0, s1] = room.scores.map((s) => s || empty);
-  const winner = s0.score === s1.score ? -1 : s0.score > s1.score ? 0 : 1;
+  const empty = (animal) => ({ analysis: null, score: { ...scoreBark(animal, emptyAnalysis()), hint: 'No audio arrived from this player.' }, meta: null });
+  const [r0, r1] = room.reports.map((r) => r || empty(room.animal));
+  const s0 = r0.score.score;
+  const s1 = r1.score.score;
+  const winner = s0 === s1 ? -1 : s0 > s1 ? 0 : 1;
   if (winner >= 0) room.wins[winner]++;
 
   room.players.forEach((p, i) => {
@@ -110,8 +122,8 @@ function finishRound(room) {
       type: 'roundResult',
       round: room.round,
       animal: room.animal,
-      you: i === 0 ? s0 : s1,
-      them: i === 0 ? s1 : s0,
+      you: i === 0 ? r0 : r1,
+      them: i === 0 ? r1 : r0,
       outcome: winner === -1 ? 'tie' : winner === i ? 'win' : 'lose',
       wins: { you: room.wins[i], them: room.wins[1 - i] },
     });
@@ -128,12 +140,17 @@ function finishRound(room) {
         type: 'gameOver',
         outcome: mine === theirs ? 'tie' : mine > theirs ? 'win' : 'lose',
         wins: { you: mine, them: theirs },
+        rounds: room.round,
       });
     });
     room.timer = null;
   } else {
     room.timer = setTimeout(() => startRound(room), BETWEEN_ROUNDS_MS);
   }
+}
+
+function emptyAnalysis() {
+  return { features: { activeFrames: 0 }, contour: { st: [] } };
 }
 
 function leaveRoom(player) {
@@ -148,22 +165,33 @@ function leaveRoom(player) {
   }
 }
 
-function clamp01(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
-}
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+const META_FIELDS = ['inputRate', 'captureFrames', 'startErrorMs', 'scheduleLeadMs', 'syncOffsetMs', 'syncRttMs', 'baseLatencyMs', 'outputLatencyMs', 'rawPeakDbfs', 'rawClipRatio', 'resampleMs'];
 
-function onScore(player, msg) {
+function onAudio(player, msg) {
   const room = player.room;
-  if (!room || msg.round !== room.round) return;
+  if (!room || msg.round !== room.round || typeof msg.pcm !== 'string') return;
   const i = room.players.indexOf(player);
-  if (room.scores[i]) return;
-  const b = msg.breakdown || {};
-  room.scores[i] = {
-    score: Math.round(clamp01(msg.score / 100) * 100),
-    breakdown: { volume: clamp01(b.volume), accuracy: clamp01(b.accuracy), gusto: clamp01(b.gusto) },
-  };
-  if (room.scores[0] && room.scores[1]) finishRound(room);
+  if (room.reports[i]) return;
+
+  const receivedAt = Date.now();
+  const t0 = performance.now();
+  let pcm = decodePcm16(msg.pcm);
+  if (pcm.length > MAX_SAMPLES) pcm = pcm.subarray(0, MAX_SAMPLES);
+  const analysis = analyze(fromInt16(pcm), SAMPLE_RATE);
+  const score = scoreBark(room.animal, analysis);
+  const serverMs = performance.now() - t0;
+
+  const meta = Object.fromEntries(META_FIELDS.map((k) => [k, num(msg.meta?.[k])]));
+  meta.samples = pcm.length;
+  meta.uploadBytes = msg.pcm.length;
+  meta.uploadDelayMs = receivedAt - (room.recordStartAt + RECORD_MS);
+  meta.serverMs = Math.round(serverMs * 10) / 10;
+  meta.scoredBy = 'server';
+
+  room.reports[i] = { analysis: serializeAnalysis(analysis), score, meta };
+  console.log(`[room] r${room.round} ${player.name}: ${score.score} (${room.animal}) dsp ${serverMs.toFixed(1)} ms`);
+  if (room.reports[0] && room.reports[1]) finishRound(room);
 }
 
 wss.on('connection', (ws) => {
@@ -177,6 +205,10 @@ wss.on('connection', (ws) => {
       return;
     }
     switch (msg.type) {
+      case 'ping':
+        // NTP-style: the client brackets this timestamp with its own send/receive times.
+        send(player, { type: 'pong', id: msg.id, ts: Date.now() });
+        break;
       case 'join':
         player.name = String(msg.name || '').trim().slice(0, 20) || 'Stranger';
         leaveRoom(player);
@@ -193,8 +225,12 @@ wss.on('connection', (ws) => {
       case 'signal':
         send(opponentOf(player), { type: 'signal', data: msg.data });
         break;
-      case 'score':
-        onScore(player, msg);
+      case 'audio':
+        try {
+          onAudio(player, msg);
+        } catch (err) {
+          console.error('audio analysis failed', err);
+        }
         break;
     }
   });
