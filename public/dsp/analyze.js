@@ -284,8 +284,17 @@ export function analyze(pcm, fs = SAMPLE_RATE) {
   }
 
   // ---- voice activity: noise floor + hysteresis, merge short gaps ----
+  // The 10th-percentile level is the noise floor only if the clip has quiet
+  // gaps. A sound held for the whole window (a long moo or howl) leaves no
+  // gaps, so when the dynamic range is small we fall back to an absolute
+  // audibility threshold instead of declaring the clip silent.
   const noiseFloorDb = percentile(rmsDb, 0.1) ?? -100;
-  const thrOn = Math.min(-30, Math.max(-62, noiseFloorDb + 12));
+  const levelP95 = percentile(rmsDb, 0.95) ?? -100;
+  const dynamicRange = levelP95 - noiseFloorDb;
+  const STEADY_AUDIBLE_DB = -48; // above typical quiet-room noise with AGC off
+  const thrOn = dynamicRange < 10
+    ? STEADY_AUDIBLE_DB
+    : Math.max(-62, noiseFloorDb + Math.min(12, dynamicRange / 2));
   const thrOff = thrOn - 6;
   const active = new Uint8Array(nFrames);
   let on = false;

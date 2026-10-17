@@ -5,10 +5,12 @@ import { linePlot, heatmap, makeRamp } from './plot.js';
 import { decodeMel, MEL_CENTERS } from './dsp/analyze.js';
 import { ANIMALS } from './dsp/score.js';
 
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const specRamp = makeRamp(['#120e19', '#3a2238', '#7d3f2a', '#d07a2a', '#ffc978', '#fff3df']);
-const mfccRamp = makeRamp(['#199e70', '#3b3743', '#d55181']);
+const css = (name) => getComputedStyle(document.getElementById('report') || document.documentElement).getPropertyValue(name).trim();
+const specRamp = makeRamp(['#2b1d10', '#4a2c16', '#7d4320', '#c8742a', '#f3c33e', '#fff3df']);
+const mfccRamp = makeRamp(['#1baf7a', '#efe6d4', '#e87ba4']);
 const hzToMel = (f) => 2595 * Math.log10(1 + f / 700);
+// The YAMNet classifier still runs and scores on the server; its report UI is hidden.
+const SHOW_CLASSIFIER = false;
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -110,7 +112,10 @@ function scoreHead(name, color, rep, outcome) {
 }
 
 function waterfall(score) {
-  const rows = score.waterfall.map((w) => {
+  const rows = score.waterfall
+    .filter((w) => w.kind !== 'ml' || SHOW_CLASSIFIER || Math.abs(w.lost) >= 0.05)
+    .map((w) => (w.kind === 'ml' && !SHOW_CLASSIFIER ? { ...w, label: 'Recognition' } : w))
+    .map((w) => {
     const gain = w.lost < 0;
     const mag = Math.abs(w.lost);
     return el('div', { class: 'wf-row' },
@@ -298,7 +303,7 @@ function mfccChart(a) {
     yTicks: [0, 5, 11].map((r) => ({ row: r, label: `c${r + 1}` })),
     tooltip: (c, r) => `c${r + 1} @ ${(ts[c * step] ?? 0).toFixed(2)} s = ${rows[r][c].toFixed(1)}`,
   });
-  return { box: el('div', {}, box, legend([['negative', '#199e70'], ['0', '#3b3743'], ['positive', '#d55181']])), render };
+  return { box: el('div', {}, box, legend([['negative', '#1baf7a'], ['0', '#d9ccb2'], ['positive', '#e87ba4']])), render };
 }
 
 function playerPanel(name, color, rep, outcome) {
@@ -313,20 +318,20 @@ function playerPanel(name, color, rep, outcome) {
     panel.append(el('p', { class: 'muted' }, 'No audio was received from this player for this round.'));
     return { panel, renders };
   }
-  panel.append(
+  panel.append(...[
     add(spectrogram(a, color)),
     add(loudnessChart(a, color)),
     rep.score.contour && rep.score.contour.user.length ? add(contourChart(rep.score, color)) : add(fluxChart(a, color)),
     el('h4', {}, 'How the judge scored it'),
     termsTable(rep.score),
-    (() => {
+    SHOW_CLASSIFIER ? (() => {
       const m = mlSection(rep.score, color);
       if (m.render) renders.push(m.render);
       return m.node || m;
-    })(),
+    })() : null,
     add(mfccChart(a)),
     featureDump(a),
-  );
+  ].filter(Boolean));
   return { panel, renders };
 }
 
@@ -390,13 +395,13 @@ function diagnosticsTable(match) {
         el('td', { class: 'num' }, fmt(rep.analysis?.features.lufsIntegrated, 1)),
         el('td', { class: 'num' }, fmt(m.resampleMs, 1)),
         el('td', { class: 'num' }, fmt(m.serverMs ?? rep.analysis?.analysisMs, 1)),
-        el('td', { class: 'num' }, fmt(m.mlMs, 1)),
+        SHOW_CLASSIFIER ? el('td', { class: 'num' }, fmt(m.mlMs, 1)) : null,
         el('td', { class: 'num' }, m.uploadBytes ? `${(m.uploadBytes / 1024).toFixed(0)} KB / ${fmt(m.uploadDelayMs, 0, 'ms')}` : '—'),
       ));
     }
   }
-  const heads = ['Capture', 'Resample', 'Start error', 'Scheduled ahead', 'Raw peak dBFS', 'Clipped', 'DC offset', 'Noise floor dB', 'SNR dB', 'Crest dB', 'Integrated LUFS', 'Resample ms', 'DSP ms', 'YAMNet ms', 'Upload'];
-  return el('div', { class: 'table-scroll' }, el('table', { class: 'diag' }, el('thead', {}, el('tr', {}, heads.map((h) => el('th', {}, h)))), el('tbody', {}, rows)));
+  const heads = ['Capture', 'Resample', 'Start error', 'Scheduled ahead', 'Raw peak dBFS', 'Clipped', 'DC offset', 'Noise floor dB', 'SNR dB', 'Crest dB', 'Integrated LUFS', 'Resample ms', 'DSP ms', SHOW_CLASSIFIER ? 'YAMNet ms' : null, 'Upload'];
+  return el('div', { class: 'table-scroll' }, el('table', { class: 'diag' }, el('thead', {}, el('tr', {}, heads.filter(Boolean).map((h) => el('th', {}, h)))), el('tbody', {}, rows)));
 }
 
 function kvGrid(pairs) {
@@ -482,8 +487,8 @@ function methodology() {
       el('li', {}, 'Activity: noise floor = 10th-percentile frame RMS; hysteresis VAD at floor + 12 dB (on) / −6 dB (off), gaps ≤ 50 ms merged, segments < 40 ms dropped.'),
       el('li', {}, 'Onsets: half-wave rectified log-magnitude spectral flux normalised to its 99th percentile; peaks above a local mean + 0.1 and an absolute 0.15, ≥ 80 ms apart, confirmed by a ≥ 4 dB energy rise; VAD segment starts are added when no flux onset is within 60 ms.'),
       el('li', {}, 'Loudness: ITU-R BS.1770 K-weighting re-derived at 16 kHz and calibrated to +0.691 dB at 1 kHz; momentary loudness over 400 ms windows; integrated loudness with −70 LUFS absolute and −10 LU relative gates.'),
-      el('li', {}, 'Neural classifier: the same 16 kHz PCM goes through YAMNet (MobileNet-v1 trained on AudioSet, 521 classes; 0.96 s log-mel windows at a 0.48 s hop) on TF.js\u2019s WebAssembly backend. Windows overlapping voice activity by ≥ 25% are kept; each animal\u2019s clip probability is the mean of its two best windows over its AudioSet classes (e.g. Dog/Bark/Yip/Bow-wow). Recognition = evidence × share, where evidence log-scales the target probability from 1e-3→0 to 0.3→1 and share is the target\u2019s fraction of all seven animals with a 1e-3 prior.'),
-      el('li', {}, 'Judging: each feature target scores 1 inside its range and decays as a Gaussian of the distance outside it (in semitones for pitch). Tonal animals also match the pitch contour (48 points, median-centred) against a template with DTW; match = exp(−mean|Δ| / 3 st). DSP = 100 · accuracy · (0.6 + 0.3 · volume + 0.1 · gusto). Final = DSP + 0.3 · max(0, 100 · recognition − DSP), so the classifier\u2019s 30% share can raise a score toward its verdict but never lowers it. The waterfall gives the exact points each term cost or added.'),
+      SHOW_CLASSIFIER && el('li', {}, 'Neural classifier: the same 16 kHz PCM goes through YAMNet (MobileNet-v1 trained on AudioSet, 521 classes; 0.96 s log-mel windows at a 0.48 s hop) on TF.js\u2019s WebAssembly backend. Windows overlapping voice activity by ≥ 25% are kept; each animal\u2019s clip probability is the mean of its two best windows over its AudioSet classes (e.g. Dog/Bark/Yip/Bow-wow). Recognition = evidence × share, where evidence log-scales the target probability from 1e-3→0 to 0.3→1 and share is the target\u2019s fraction of all seven animals with a 1e-3 prior.'),
+      el('li', {}, 'Judging: each feature target scores 1 inside its range and decays as a Gaussian of the distance outside it (in semitones for pitch). Tonal animals also match the pitch contour (48 points, median-centred) against a template with DTW; match = exp(−mean|Δ| / 3 st). DSP = 100 · accuracy · (0.6 + 0.3 · volume + 0.1 · gusto). A small recognition bonus can be added on top when an internal audio classifier is confident it heard the animal. The waterfall gives the exact points each term cost or added.'),
     ),
   );
 }
@@ -497,7 +502,7 @@ export function renderReport(root, match, { onBack }) {
   const themTotal = solo ? 0 : match.rounds.reduce((a, r) => a + r.them.score.score, 0);
   const pendingRenders = [];
 
-  const download = el('button', { class: 'secondary', onclick: () => {
+  const download = el('button', { class: 'btn-plain', onclick: () => {
     const blob = new Blob([JSON.stringify(match, null, 1)], { type: 'application/json' });
     const a = el('a', { href: URL.createObjectURL(blob), download: `barkoff-report-${new Date(match.startedAt).toISOString().slice(0, 19).replace(/:/g, '')}.json` });
     document.body.append(a);
@@ -511,15 +516,16 @@ export function renderReport(root, match, { onBack }) {
     : `You ${match.wins.you}–${match.wins.them} ${match.them.name}`;
 
   root.append(
+    el('span', { class: 'mini-logo rep-logo' }, 'Barkoff'),
     el('div', { class: 'rep-top' },
       el('div', {},
         el('p', { class: 'eyebrow' }, solo ? 'Practice report' : 'Match report'),
         el('h2', {}, headline),
         el('p', { class: 'muted' }, solo
-          ? `Analysed in your browser · total ${youTotal} pts`
+          ? `${match.rounds.length} round${match.rounds.length === 1 ? '' : 's'} · scored on the farm server · total ${youTotal} pts`
           : `${match.rounds.length} rounds · scored server-side · total points ${youTotal} vs ${themTotal}`),
       ),
-      el('div', { class: 'buttons' }, download, el('button', { onclick: onBack }, solo ? 'Back to practice' : 'Back to the arena')),
+      el('div', { class: 'rep-buttons' }, download, el('button', { class: 'btn-barn', onclick: onBack }, solo ? 'Back to practice' : 'Back to the arena')),
     ),
   );
 

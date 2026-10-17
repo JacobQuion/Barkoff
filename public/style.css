@@ -102,7 +102,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .round-brief { margin: 0 0 12px; color: var(--muted); }
 
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.grid-1 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; max-width: 760px; }
+.grid-1 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 @media (max-width: 860px) { .grid-2 { grid-template-columns: minmax(0, 1fr); } }
 
 .r-panel { display: grid; gap: 14px; align-content: start; min-width: 0; background: var(--bg); border-radius: 12px; padding: 14px; }
@@ -550,3 +550,78 @@ body.home main { max-width: none; padding: 0; }
 .ml-row.target { color: var(--fg); font-weight: 700; }
 .ml-row .num { text-align: right; }
 .ml-fill { display: block; height: 100%; border-radius: 4px; background: var(--grid-strong); }
+
+/* ---------- report: farm ---------- */
+/* Same barnyard world as the game: sky backdrop, cream stall-cards with
+   wooden shadows, Lilita headings. The report redefines the shared chart
+   tokens for a light surface (series steps validated on #fffaf0). */
+body.reporting { background: linear-gradient(var(--sky-top), var(--sky-low) 560px) var(--sky-low); overflow-x: clip; }
+#report {
+  --text: var(--ink);
+  --fg: var(--ink);
+  --muted: var(--ink-soft);
+  --bg: #f7ecd6;
+  --panel: #fffaf0;
+  --panel-2: #efe2c4;
+  --surface: #fffaf0;
+  --grid: rgba(58, 38, 20, 0.1);
+  --grid-strong: rgba(58, 38, 20, 0.32);
+  --you: #2a78d6;
+  --them: #eb6834;
+  --vad: #7bc54f;
+  --win: #3f8f2a;
+  --lose: #c8372d;
+  --accent: #c47a26;
+  color-scheme: light;
+  color: var(--ink);
+  font-family: var(--rounded);
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-block: 18px 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+#report::after {
+  content: "";
+  display: block;
+  height: 110px;
+  margin-inline: calc(50% - 50vw);
+  background:
+    linear-gradient(transparent 58px, #fffaf0 58px 64px, transparent 64px 76px, #fffaf0 76px 82px, transparent 82px),
+    repeating-linear-gradient(90deg, transparent 0 34px, #fffaf0 34px 44px) bottom / 100% 64px no-repeat,
+    radial-gradient(120% 140px at 50% 100%, var(--grass) 70%, transparent 71%);
+}
+.rep-logo { justify-self: start; font-size: 2rem; }
+.rep-top h2 { font-family: var(--display); font-weight: 400; font-size: clamp(2.2rem, 5vw, 3.2rem); letter-spacing: 0.01em; line-height: 1.05; }
+.rep-top .muted { font-weight: 700; }
+#report .eyebrow { color: var(--barn); }
+.rep-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.rep-buttons button { flex: 0 0 auto; font: 800 1rem var(--rounded); padding: 12px 18px; border-radius: 14px; transition: transform 0.1s, box-shadow 0.1s; }
+.rep-buttons button:active { transform: translateY(4px); box-shadow: 0 1px 0 rgba(0, 0, 0, 0.3); }
+.rep-buttons button:focus-visible, #report .tab:focus-visible { outline: 3px solid var(--wood-dark); outline-offset: 3px; }
+
+#report .rep-sec {
+  background: var(--panel);
+  border: 4px solid #e8d3a8;
+  border-radius: 20px;
+  box-shadow: 0 6px 0 #d5bb8b, 0 16px 28px rgba(58, 38, 20, 0.12);
+  padding: 18px;
+}
+#report .rep-sec h3 { font-family: var(--display); font-weight: 400; font-size: 1.6rem; letter-spacing: 0.01em; }
+#report .rep-sec h4 { color: var(--wood); font-weight: 800; }
+#report th { color: var(--ink-soft); }
+#report .r-panel { background: var(--bg); border: 3px solid #eadab8; border-radius: 16px; }
+#report .r-big { font-family: var(--display); font-weight: 400; font-size: 3rem; }
+#report .r-name { font-size: 1.05rem; }
+#report .tab { background: var(--panel-2); color: var(--ink); border-radius: 14px; font-family: var(--rounded); font-weight: 800; box-shadow: 0 3px 0 #d5bb8b; }
+#report .tab[aria-selected="true"] { background: var(--wood); color: var(--cream); box-shadow: 0 3px 0 var(--wood-dark); }
+#report .pill { background: var(--panel-2); }
+#report .pill.win { background: rgba(123, 197, 79, 0.25); color: var(--win); }
+#report .pill.lose { background: rgba(200, 55, 45, 0.14); color: var(--lose); }
+#report .chart canvas { background: transparent; }
+#report .tip-box { background: #fffdf7; box-shadow: 0 4px 12px rgba(58, 38, 20, 0.15); }
+#report .wf-track, #report .meter { background: var(--panel-2); }
+#report .num { color: var(--ink); }
+#report .muted .num, #report td.muted { color: var(--ink-soft); }
+#report details summary { color: var(--wood); font-weight: 800; }
+#report .method ol { color: var(--ink-soft); }

@@ -16,7 +16,7 @@ import { loadYamnet, classify, recognitionFor, yamnetStatus } from './ml/yamnet.
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
 
-const ROUNDS = 3;            // best of 3...
+const ROUNDS = 3;            // all 3 rounds are played...
 const MAX_ROUNDS = 5;        // ...with sudden death on ties, up to 5
 const MATCH_START_MS = 4000; // time for the video call to connect
 const COUNTDOWN_MS = 3000;
@@ -131,9 +131,9 @@ function finishRound(room) {
     });
   });
 
+  // Always play all ROUNDS; only a tie after that goes to sudden death.
   const [w0, w1] = room.wins;
-  const needed = Math.ceil(ROUNDS / 2);
-  const decided = w0 >= needed || w1 >= needed || (room.round >= ROUNDS && w0 !== w1);
+  const decided = room.round >= ROUNDS && w0 !== w1;
   if (decided || room.round >= MAX_ROUNDS) {
     room.players.forEach((p, i) => {
       const mine = room.wins[i];

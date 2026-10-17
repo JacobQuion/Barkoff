@@ -8,6 +8,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const wallNow = () => performance.timeOrigin + performance.now();
 const PRACTICE_COUNTDOWN_MS = 3000;
 const RECORD_MS = 4000;
+// The YAMNet classifier still runs and scores on the server; its UI is hidden.
+const SHOW_CLASSIFIER = false;
 
 let mode = null; // 'online' | 'practice' | null
 let ws = null;
@@ -270,7 +272,7 @@ function renderResult(el, score, outcome, showHint) {
     bar('Accuracy', score.breakdown.accuracy) +
     bar('Volume', score.breakdown.volume) +
     bar('Gusto', score.breakdown.gusto) +
-    (score.breakdown.recognition != null ? bar('YAMNet', score.breakdown.recognition) : '') +
+    (SHOW_CLASSIFIER && score.breakdown.recognition != null ? bar('YAMNet', score.breakdown.recognition) : '') +
     (showHint ? `<div class="hint-line"></div>` : '');
   el.querySelector('.label').textContent = score.label;
   if (showHint) el.querySelector('.hint-line').textContent = `Tip: ${score.hint}`;
@@ -349,6 +351,7 @@ async function startPractice() {
   const { pcm16k, meta } = prepareUpload(cap);
   const report = (await judgeOnServer(animal, pcm16k, meta)) || judgeLocally(animal, pcm16k, meta);
   if (mode !== 'practice') return;
+  if (ws) snapshotClock();
   match.rounds.push({ round: match.rounds.length + 1, animal, outcome: null, you: report, them: null });
   $('countdown').textContent = '';
   renderResult($('youResult'), report.score, null, true);
@@ -629,6 +632,7 @@ function teardownPeer() {
 
 function showArena(solo) {
   document.body.classList.add('home');
+  document.body.classList.remove('reporting');
   $('lobby').hidden = true;
   $('report').hidden = true;
   $('arena').hidden = false;
@@ -646,7 +650,7 @@ function showArena(solo) {
 function showReport() {
   if (!match || !match.rounds.length) return;
   if (disposeReport) disposeReport();
-  document.body.classList.remove('home');
+  document.body.classList.add('home', 'reporting');
   $('arena').hidden = true;
   $('report').hidden = false;
   window.scrollTo(0, 0);
@@ -656,7 +660,7 @@ function showReport() {
       disposeReport = null;
       $('report').hidden = true;
       $('arena').hidden = false;
-      document.body.classList.add('home');
+      document.body.classList.remove('reporting');
     },
   });
 }
@@ -673,6 +677,7 @@ function showLobby() {
   $('report').hidden = true;
   $('lobby').hidden = false;
   document.body.classList.add('home');
+  document.body.classList.remove('reporting');
 }
 
 async function withMedia(fn) {

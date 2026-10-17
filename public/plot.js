@@ -2,7 +2,8 @@
 // and heatmaps with overlays. Colors come from CSS custom properties so the
 // charts follow the page's tokens.
 
-const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+// Tokens are read from the report (which defines its own palette) when present.
+const css = (name) => getComputedStyle(document.getElementById('report') || document.documentElement).getPropertyValue(name).trim();
 const FONT = '11px ui-monospace, "SF Mono", Menlo, monospace';
 const PAD = { l: 44, r: 10, t: 10, b: 26 };
 
